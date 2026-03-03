@@ -1,0 +1,16 @@
+# Build artifacts
+/bin/
+*.wasm
+
+# Generated npm packages (regenerate with `gowasm build`)
+examples/*/node/
+
+# Node
+node_modules/
+dist/
+
+# OS
+.DS_Store
+
+# Release artifacts
+/dist/
