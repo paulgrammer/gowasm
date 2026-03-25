@@ -1,0 +1,13 @@
+{
+  // Type-checks the tests against the built declarations without emitting.
+  // This is what makes the @ts-expect-error guards in the generated tests
+  // enforceable: if codegen ever regresses to `any`, they stop erroring and
+  // this configuration fails.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "include": ["test/**/*.ts"]
+}
