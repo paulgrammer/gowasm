@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push to the same branch supersedes this run.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Lint, test, and build every example
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The generated packages are TypeScript compiled and tested with Node, and
+      # `go test` for js/wasm runs its binaries under Node as well.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Lint, unit tests, the runtime bridge under the real wasm_exec.js, and
+      # every example built and tested end to end.
+      - name: Verify
+        run: make verify
+
+      # Regenerating must produce no diff. This catches a generator change that
+      # was never re-run against the examples, which would otherwise only show
+      # up as a confusing failure in someone else's build.
+      - name: Check generated output is current
+        run: make check-generated
+
+      - name: Cross-compile every release platform
+        run: make cross

@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Lets the pipeline be exercised without cutting a tag. A manual run stamps
+  # whatever `git describe` returns, so it will not masquerade as a release.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release binaries
+    runs-on: ubuntu-latest
+    # Surfaced as job-level env so the signing step's `if:` can test it: the
+    # `secrets` context is not available in step-level `if:` expressions.
+    env:
+      QUILL_SIGN_P12: ${{ secrets.QUILL_SIGN_P12 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history and tags, so `git describe` stamps the exact release
+          # version into the binaries. Without this the build reports a bare
+          # commit hash instead of the tag.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Needed by test-runtime: `go test` for js/wasm runs the test binary under
+      # Node through GOROOT's go_js_wasm_exec wrapper.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # A release must not publish binaries that were never exercised. This is
+      # the fast gate; the full example suite runs in CI on every push.
+      - name: Verify
+        run: |
+          make lint
+          make test
+          make test-runtime
+
+      # Cross-compiles darwin/linux/windows x arm64/amd64 into dist/. All six
+      # build on this one Linux runner because CGO is off and gowasm has no cgo
+      # dependencies of its own.
+      - name: Build all platforms
+        run: make cross
+
+      - name: Smoke-test host binary
+        run: ./dist/gowasm-linux-amd64 -version
+
+      # Signs and notarizes the macOS binaries with quill, which works from
+      # Linux with no macOS runner or Keychain, so Gatekeeper does not flag
+      # downloads. Runs only when Apple credentials are configured; without them
+      # the release ships unsigned and users clear the quarantine attribute
+      # themselves. Required secrets:
+      #   QUILL_SIGN_P12       Developer ID Application cert (.p12, base64)
+      #   QUILL_SIGN_PASSWORD  p12 password
+      #   QUILL_NOTARY_KEY     App Store Connect API private key (.p8, base64)
+      #   QUILL_NOTARY_KEY_ID  API key ID
+      #   QUILL_NOTARY_ISSUER  API issuer ID
+      - name: Sign and notarize macOS binaries
+        if: ${{ env.QUILL_SIGN_P12 != '' }}
+        env:
+          QUILL_SIGN_PASSWORD: ${{ secrets.QUILL_SIGN_PASSWORD }}
+          QUILL_NOTARY_KEY: ${{ secrets.QUILL_NOTARY_KEY }}
+          QUILL_NOTARY_KEY_ID: ${{ secrets.QUILL_NOTARY_KEY_ID }}
+          QUILL_NOTARY_ISSUER: ${{ secrets.QUILL_NOTARY_ISSUER }}
+        run: |
+          curl -sSfL https://get.anchore.io/quill | sh -s -- -b "$RUNNER_TEMP/bin" v0.7.1
+          "$RUNNER_TEMP/bin/quill" sign-and-notarize dist/gowasm-darwin-arm64
+          "$RUNNER_TEMP/bin/quill" sign-and-notarize dist/gowasm-darwin-amd64
+
+      # Packages without rebuilding, so any signature applied above survives.
+      # Notarization tickets cannot be stapled to a bare CLI binary, so
+      # Gatekeeper verifies them online on first run.
+      - name: Package all platforms
+        run: make package
+
+      - name: Show checksums
+        run: cat dist/archives/checksums.txt
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/archives/*.tar.gz
+            dist/archives/*.zip
+            dist/archives/checksums.txt
+          generate_release_notes: true
