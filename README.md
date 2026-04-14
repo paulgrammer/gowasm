@@ -1,0 +1,277 @@
+# gowasm
+
+Turn a Go package into a typed npm package, built on WebAssembly.
+
+You write ordinary Go. `gowasm` compiles it to WebAssembly and generates the
+whole TypeScript side around it — types, a typed client, the loader, and tests.
+There is no TypeScript for you to write and no annotations to add to your Go.
+
+```go
+// urls/urls.go
+type Strictness string
+
+const (
+	Relaxed Strictness = "relaxed"
+	Strict  Strictness = "strict"
+)
+
+type Match struct {
+	Raw    string `json:"raw"`
+	Scheme string `json:"scheme,omitempty"`
+	Host   string `json:"host"`
+}
+
+func ExtractURLs(text string, mode Strictness) ([]Match, error) { … }
+```
+
+```console
+$ gowasm init
+$ gowasm build
+```
+
+```ts
+import { extractURLs } from "@acme/urls";
+import type { Match } from "@acme/urls";
+
+const matches: Match[] = await extractURLs("see https://go.dev", "relaxed");
+//                                                               ^ autocompletes
+//                                                                 "relaxed" | "strict"
+matches[0].host; // "go.dev"
+```
+
+The published package needs neither Go nor gowasm to use: the compiled module
+ships inside it, and it runs on Node 20+ and in browsers through any bundler.
+
+## Install
+
+```sh
+go install github.com/paulgrammer/gowasm/cmd/gowasm@latest
+gowasm doctor      # check your toolchain first
+```
+
+Requires Go 1.24+ (for `lib/wasm`) and Node 20+.
+
+## Commands
+
+| Command | Does |
+| --- | --- |
+| `gowasm init` | Interactive setup, in the style of `npm init`. Writes `gowasm.yaml`. |
+| `gowasm generate` | Scan the Go package and write the TypeScript package. No compilation. |
+| `gowasm build` | Generate, compile to WebAssembly, build the npm package. |
+| `gowasm test` | Build, then run the generated tests on Node. |
+| `gowasm publish` | Build, then hand the package to `npm publish`. |
+| `gowasm doctor` | Check that the toolchain can build and run WebAssembly. |
+
+Add `-y` to accept every default, `-C dir` to run elsewhere, `-v` to echo the
+commands being run, and `-bridge file` to inspect the generated Go glue.
+
+## What gets generated
+
+```
+node/
+  package.json  tsconfig.json  README.md  LICENSE
+  src/index.node.ts            entry points, one per target
+  src/generated/types.ts       interfaces, enum unions, aliases
+  src/generated/client.ts      the typed API
+  src/generated/codec.ts       binary conversion, when the package uses []byte
+  src/runtime/                 loader, readiness handshake, error mapping
+  src/vendor/wasm_exec.js      copied from your GOROOT
+  src/main.wasm
+  test/contract.gen.test.ts    derived from your signatures
+  test/fixtures.gen.test.ts    recorded from your Go Example functions
+```
+
+Files ending in `.gen.test.ts` are rewritten on every run. A test file without
+that infix is yours and is never touched.
+
+Nothing is written into your own source tree — not even the Go glue that
+registers your functions, nor the runtime that serves it. Both are supplied to
+the compiler through `go build -overlay`, so there is no generated directory to
+gitignore or to drift out of date.
+
+Your `go.mod` gains nothing either: gowasm is a build-time tool, not a
+dependency. The runtime is emitted alongside the generated code, which also
+means it can never fall out of step with the generator that produced its
+caller — both come from the same binary.
+
+## The rules it follows
+
+Every exported function in the package crosses the boundary. There are no
+marker comments: write a Go function, run `gowasm build`, call it from
+TypeScript.
+
+| Go | TypeScript |
+| --- | --- |
+| `string`, `bool` | `string`, `boolean` |
+| `int`…`int32`, `uint`…`uint32`, `float32/64` | `number` |
+| `int64`, `uint64` | `number`, with a precision note (or `string`, see `int64:`) |
+| `[]byte` | `Uint8Array` |
+| `[]T` | `T[]` |
+| `map[K]V` | `Record<string, V>` |
+| `*T` | `T \| null` |
+| `time.Time` | `ISODateTime` |
+| named struct | `interface`, embedded structs become `extends` |
+| named scalar with constants | a literal union — a real enum |
+| named scalar without constants | a type alias, keeping the name |
+| `interface{}` | `unknown` |
+| `chan`, `func`, `complex`, type parameters | **refused**, with a `file:line` error |
+
+That last row is the point: a channel has no honest TypeScript equivalent, so
+generation stops rather than emitting `unknown` and failing at runtime instead.
+
+Signatures follow the same idea. A leading `context.Context` is dropped from the
+JavaScript signature; a trailing `error` becomes a rejected promise; several
+non-error results become a tuple; a variadic parameter becomes a rest parameter.
+
+Struct fields use their `json` tag. **A field with no tag keeps its Go name**,
+because that is what `encoding/json` actually emits — camelCasing it would make
+the type disagree with the payload. `json:"-"` and unexported fields are
+skipped; `omitempty` makes the field optional.
+
+## Promises, and why everything is async
+
+A call from JavaScript re-enters the Go scheduler *synchronously*, inside the
+JavaScript call stack, so a Go function that blocks would freeze the event loop.
+Every exported function therefore returns a promise and runs on its own
+goroutine. A Go `error` becomes a rejection carrying a real `Error`:
+
+```ts
+import { GoError } from "@acme/urls";
+
+try {
+  await parseWhen("nonsense");
+} catch (err) {
+  if (err instanceof GoError) console.error(err.message);
+}
+```
+
+`await`, `try`/`catch`, `.catch()` and `Promise.all` all behave normally, and
+concurrent calls interleave rather than queueing.
+
+## Binary data
+
+`[]byte` is a `Uint8Array` in TypeScript. On the wire it is base64, because that
+is what `encoding/json` does, but the generated client converts at the boundary
+— including for binary nested inside structs, slices and maps. Input is
+accepted as a `Uint8Array`, an `ArrayBuffer`, a Node `Buffer`, or any typed
+array; anything else fails with a clear message rather than encoding to empty.
+
+## Generated tests
+
+Two suites, from two different sources.
+
+**Contract tests** come from your signatures: the module boots, every function
+is exported, a missing or wrong-typed argument rejects, errors arrive as
+`GoError`, concurrent calls settle independently, `dispose()` works and calls
+after it are refused. They also contain type-level guards that make `tsc` fail
+if code generation ever regresses to `any`.
+
+**Fixture tests** come from your Go `Example` functions. Rather than translating
+Go to TypeScript, gowasm extracts the calls with literal arguments, runs them
+natively to record what your code actually returns, and replays them from
+TypeScript. The expectations are produced by your own code, so they cannot drift
+from it — change the Go, re-run, and they follow. Calls it cannot reproduce are
+reported by name, never dropped silently.
+
+## Examples
+
+Each is a self-contained module. Run `gowasm test` inside any of them.
+
+| Example | Shows |
+| --- | --- |
+| [`examples/urls`](examples/urls) | The basics, and the only one targeting the browser as well as Node |
+| [`examples/blob`](examples/blob) | Binary exchange: gzip, digests, `Uint8Array[]`, variadic binary |
+| [`examples/worker-pool`](examples/worker-pool) | [Brandur Leach's Go worker pool](https://brandur.org/go-worker-pool), driven from Node |
+| [`examples/ginapi`](examples/ginapi) | A [Gin](https://gin-gonic.com) application inside WebAssembly, behind a real Node HTTP server |
+
+The Gin example is worth reading if you want an HTTP server. WebAssembly cannot
+listen on a port — Go's `net` package there is an in-process fake that nothing
+can dial — so Node keeps the socket and hands each request to the Go handler.
+Routing, binding, validation and middleware all still run in Go.
+
+## Configuration
+
+```yaml
+package: ./urls          # the Go package to expose
+out:     ./node          # where the npm package is written
+npm:
+  name:        "@acme/urls"
+  version:     0.1.0
+  description: URL extraction, compiled from Go
+  license:     MIT
+  author:      Ada Lovelace <ada@example.com>
+  repository:  github.com/acme/urls
+targets: [node, browser]
+int64:   number          # number | string
+```
+
+`gowasm init` fills this in by asking, inferring what it can from your project:
+the package name from your Go module path, the author from `git config`, the
+repository from your `origin` remote. Re-running it uses your existing answers
+as the defaults.
+
+## Publishing
+
+```sh
+gowasm publish
+gowasm publish -- --access public     # first publish of a scoped package
+gowasm publish -- --dry-run           # see what would be sent
+gowasm publish -- --tag next --otp 123456
+```
+
+`gowasm publish` is a proxy: everything after `--` reaches `npm publish`
+untouched, and gowasm adds no flags of its own. Authentication is npm's — log in
+with `npm login`, or set `NODE_AUTH_TOKEN` in CI, exactly as for any other
+package. gowasm never sees a credential.
+
+It rebuilds first, so what gets published matches the Go source rather than
+whatever happened to be left in `dist/`. Pass `-no-build` to publish exactly
+what is on disk.
+
+Only `dist/` is published, and it contains the compiled module, so consumers
+need no Go toolchain. `cd node && npm publish` still works if you would rather
+not go through gowasm at all.
+
+## Releasing
+
+```sh
+make dist                  # cross-compile, archive, checksum
+make dist VERSION=v1.2.3   # or pin the version explicitly
+```
+
+`VERSION` defaults to `git describe`, so a build from a tagged commit reports
+that tag without anything being edited. The version, commit and build date are
+stamped in through `-ldflags` and shown by `gowasm -version`.
+
+Binaries are cross-compiled with `CGO_ENABLED=0` for six platforms — darwin,
+linux and windows on both `arm64` and `amd64` — so they are fully static. gowasm
+has no cgo dependencies of its own; it shells out to the `go` and `npm` commands
+already on your machine.
+
+`make cross` writes version-less binaries to `dist/`, and `make package`
+archives them into `dist/archives/` — a `.tar.gz` per unix platform, a `.zip`
+per windows platform, and `checksums.txt`. Each archive contains a plain
+`gowasm`, so extracting one gives you a binary you can run.
+
+The two steps are separate on purpose, and `package` never rebuilds: anything
+done to the binaries in between — signing, notarizing, stripping — survives.
+
+Pushing a tag matching `v*` runs exactly these steps in GitHub Actions and
+publishes the archives to a release. `.github/workflows/release.yml` gates the
+build on `lint`, `test` and `test-runtime` first, so a broken binary cannot be
+published, and will sign and notarize the macOS binaries when Apple credentials
+are present as repository secrets — see the comments in that file. Without them
+the release ships unsigned.
+
+## Working on gowasm
+
+```sh
+make verify      # lint, unit tests, runtime tests under real wasm, all examples
+make examples    # build and test every example end to end
+make cross       # cross-compile for every released platform
+```
+
+`make test-runtime` compiles the runtime bridge for js/wasm and runs its tests
+under the real `wasm_exec.js`, through `go_js_wasm_exec`. That is the same
+source that gets emitted into generated packages, so those tests cover what
+users actually run.
