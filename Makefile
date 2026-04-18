@@ -36,6 +36,13 @@ CROSS_TARGETS := \
   windows/arm64 \
   windows/amd64
 
+# The npm distribution: one launcher package plus one package per platform
+# holding a single binary, which is how esbuild and swc ship. npm resolves the
+# os/cpu fields and installs only the matching binary, so nothing has to be
+# downloaded by an install script.
+NPM_NAME ?= gowasm
+NPM_DIST := $(DIST)/npm
+
 # sha256sum on Linux, shasum on macOS.
 SHASUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo "sha256sum" || echo "shasum -a 256")
 
@@ -96,6 +103,72 @@ package: ## Archive the binaries already in dist/, and checksum them
 .PHONY: dist
 dist: cross package ## Cross-compile, archive per platform, and checksum
 
+.PHONY: npm-packages
+npm-packages: ## Build the npm launcher and per-platform packages into dist/npm/
+	@test -d $(DIST) || { echo "nothing to package; run 'make cross' first"; exit 1; }
+	@rm -rf $(NPM_DIST) && mkdir -p $(NPM_DIST)
+	@version=$$(echo "$(VERSION)" | sed 's/^v//'); \
+	optional=""; \
+	for target in $(CROSS_TARGETS); do \
+	  goos=$${target%/*}; goarch=$${target#*/}; \
+	  ext=""; [ "$$goos" = "windows" ] && ext=".exe"; \
+	  bin="$(DIST)/gowasm-$$goos-$$goarch$$ext"; \
+	  test -f "$$bin" || { echo "missing $$bin; run 'make cross' first"; exit 1; }; \
+	  pkg="$(NPM_NAME)-$$goos-$$goarch"; \
+	  dir="$(NPM_DIST)/$$pkg"; \
+	  mkdir -p "$$dir/bin"; \
+	  cp "$$bin" "$$dir/bin/gowasm$$ext"; \
+	  chmod 0755 "$$dir/bin/gowasm$$ext"; \
+	  npmos=$$goos; [ "$$goos" = "windows" ] && npmos="win32"; \
+	  npmcpu=$$goarch; [ "$$goarch" = "amd64" ] && npmcpu="x64"; \
+	  printf '%s\n' \
+	    '{' \
+	    "  \"name\": \"$$pkg\"," \
+	    "  \"version\": \"$$version\"," \
+	    "  \"description\": \"gowasm binary for $$goos $$goarch\"," \
+	    '  "license": "MIT",' \
+	    '  "repository": "github.com/paulgrammer/gowasm",' \
+	    "  \"os\": [\"$$npmos\"]," \
+	    "  \"cpu\": [\"$$npmcpu\"]," \
+	    '  "files": ["bin"],' \
+	    '  "preferUnplugged": true' \
+	    '}' > "$$dir/package.json"; \
+	  optional="$$optional    \"$$pkg\": \"$$version\",\n"; \
+	  echo "  built $$pkg"; \
+	done; \
+	mkdir -p "$(NPM_DIST)/$(NPM_NAME)/bin"; \
+	cp npm/gowasm/bin/gowasm.js "$(NPM_DIST)/$(NPM_NAME)/bin/gowasm.js"; \
+	cp npm/gowasm/README.md "$(NPM_DIST)/$(NPM_NAME)/README.md"; \
+	chmod 0755 "$(NPM_DIST)/$(NPM_NAME)/bin/gowasm.js"; \
+	printf '%s\n' \
+	  '{' \
+	  "  \"name\": \"$(NPM_NAME)\"," \
+	  "  \"version\": \"$$version\"," \
+	  '  "description": "Turn a Go package into a typed npm package built on WebAssembly",' \
+	  '  "license": "MIT",' \
+	  '  "repository": "github.com/paulgrammer/gowasm",' \
+	  '  "keywords": ["go", "golang", "wasm", "webassembly", "codegen", "typescript"],' \
+	  '  "bin": { "gowasm": "bin/gowasm.js" },' \
+	  '  "files": ["bin", "README.md"],' \
+	  '  "engines": { "node": ">=20" },' \
+	  '  "optionalDependencies": {' > "$(NPM_DIST)/$(NPM_NAME)/package.json"; \
+	printf "$$optional" | sed '$$ s/,$$//' >> "$(NPM_DIST)/$(NPM_NAME)/package.json"; \
+	printf '%s\n' '  }' '}' >> "$(NPM_DIST)/$(NPM_NAME)/package.json"; \
+	echo "  built $(NPM_NAME) (launcher)"
+	@echo "npm packages in $(NPM_DIST)/"
+
+.PHONY: npm-publish
+npm-publish: ## Publish the npm packages (platform packages first, then the launcher)
+	@test -d $(NPM_DIST) || { echo "run 'make npm-packages' first"; exit 1; }
+	@# The launcher lists the platform packages as dependencies, so they have to
+	@# exist on the registry before it does, or the first install of it fails.
+	@for target in $(CROSS_TARGETS); do \
+	  goos=$${target%/*}; goarch=$${target#*/}; \
+	  ( cd "$(NPM_DIST)/$(NPM_NAME)-$$goos-$$goarch" && npm publish --access public $(NPM_FLAGS) ) || exit 1; \
+	done
+	@cd "$(NPM_DIST)/$(NPM_NAME)" && npm publish --access public $(NPM_FLAGS)
+	@echo "published $(NPM_NAME)@$(VERSION)"
+
 .PHONY: test
 test: ## Run the tool's unit tests
 	$(GO) test ./...
@@ -134,6 +207,7 @@ verify: lint test test-runtime examples ## Everything CI should run
 .PHONY: clean
 clean: ## Remove build output and generated packages
 	rm -rf bin $(DIST)
+	@find npm -name '*.tgz' -delete 2>/dev/null || true
 	@for ex in $(EXAMPLES); do rm -rf examples/$$ex/node; done
 
 .PHONY: install

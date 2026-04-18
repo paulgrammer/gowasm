@@ -44,3 +44,19 @@ jobs:
 
       - name: Cross-compile every release platform
         run: make cross
+
+      # Builds the npm distribution and installs it the way a user would, so a
+      # broken launcher or manifest is caught here rather than after a release
+      # has already gone out.
+      - name: Build and smoke-test the npm packages
+        run: |
+          make npm-packages
+          for f in dist/npm/*/package.json; do
+            node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))" || exit 1
+          done
+          cd "$(mktemp -d)"
+          npm init -y >/dev/null
+          npm install --silent "$GITHUB_WORKSPACE"/dist/npm/gowasm-linux-amd64
+          npm install --silent "$GITHUB_WORKSPACE"/dist/npm/gowasm
+          npx gowasm -version
+          npx gowasm doctor

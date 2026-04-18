@@ -45,11 +45,47 @@ ships inside it, and it runs on Node 20+ and in browsers through any bundler.
 ## Install
 
 ```sh
-go install github.com/paulgrammer/gowasm/cmd/gowasm@latest
-gowasm doctor      # check your toolchain first
+npm install -g gowasm          # or: npx gowasm init
 ```
 
-Requires Go 1.24+ (for `lib/wasm`) and Node 20+.
+```sh
+curl -fsSL https://raw.githubusercontent.com/paulgrammer/gowasm/main/install.sh | sh
+```
+
+```sh
+go install github.com/paulgrammer/gowasm/cmd/gowasm@latest
+```
+
+The npm package is a launcher; the binary comes from a small platform-specific
+package installed as an optional dependency. npm resolves the `os` and `cpu`
+fields and fetches only the binary your machine can run, and no install script
+downloads anything — so it works with `--ignore-scripts`, offline caches and
+locked-down CI.
+
+Then check the toolchain before anything else:
+
+```sh
+gowasm doctor
+```
+
+Requires Go 1.24+ (for `lib/wasm`) and Node 20+. gowasm drives both rather than
+bundling them, so the installer says so if either is missing.
+
+The install script verifies the release checksum before installing, and refuses
+to install anything that does not match. It takes two environment variables:
+
+| Variable | Default |
+| --- | --- |
+| `GOWASM_VERSION` | the latest release tag |
+| `GOWASM_INSTALL` | `/usr/local/bin`, falling back to `~/.local/bin` |
+
+Installing through `curl` and `tar` also sidesteps the `com.apple.quarantine`
+attribute a browser download would set, so macOS Gatekeeper does not flag the
+binary even when a release is unsigned.
+
+While the repository is private its release assets are not publicly
+downloadable; the script detects that and falls back to `gh release download`,
+using your existing GitHub CLI login.
 
 ## Commands
 
@@ -237,6 +273,8 @@ not go through gowasm at all.
 ```sh
 make dist                  # cross-compile, archive, checksum
 make dist VERSION=v1.2.3   # or pin the version explicitly
+make npm-packages          # build the npm distribution into dist/npm/
+make npm-publish           # publish it
 ```
 
 `VERSION` defaults to `git describe`, so a build from a tagged commit reports
@@ -247,6 +285,10 @@ Binaries are cross-compiled with `CGO_ENABLED=0` for six platforms — darwin,
 linux and windows on both `arm64` and `amd64` — so they are fully static. gowasm
 has no cgo dependencies of its own; it shells out to the `go` and `npm` commands
 already on your machine.
+
+`make npm-packages` builds the npm distribution into `dist/npm/` and
+`make npm-publish` pushes it, platform packages first so the launcher's
+dependencies exist before the launcher does.
 
 `make cross` writes version-less binaries to `dist/`, and `make package`
 archives them into `dist/archives/` — a `.tar.gz` per unix platform, a `.zip`
