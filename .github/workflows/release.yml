@@ -18,7 +18,6 @@ jobs:
     # `secrets` context is not available in step-level `if:` expressions.
     env:
       QUILL_SIGN_P12: ${{ secrets.QUILL_SIGN_P12 }}
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,8 +38,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          # Writes the .npmrc the publish step authenticates through.
-          registry-url: "https://registry.npmjs.org"
 
       # A release must not publish binaries that were never exercised. This is
       # the fast gate; the full example suite runs in CI on every push.
@@ -99,17 +96,7 @@ jobs:
             dist/archives/checksums.txt
           generate_release_notes: true
 
-      # Publishes the same binaries to npm: one small package per platform plus
-      # a launcher that lists them as optional dependencies, so `npm install`
-      # fetches only the binary this machine can run and no install script has
-      # to download anything.
-      #
-      # Runs after the GitHub release, so a failure here cannot leave the
-      # release itself half-made. Skipped entirely when NPM_TOKEN is absent.
-      - name: Publish to npm
-        if: ${{ env.NPM_TOKEN != '' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          make npm-packages
-          make npm-publish
+      # Publishing to npm is a separate workflow, triggered by this release
+      # being published. Keeping it apart means a registry failure cannot leave
+      # the GitHub release half-made, and it can be re-run on its own.
+

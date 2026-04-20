@@ -103,6 +103,37 @@ package: ## Archive the binaries already in dist/, and checksum them
 .PHONY: dist
 dist: cross package ## Cross-compile, archive per platform, and checksum
 
+# The inverse of package: restores dist/ from the release archives, so the npm
+# distribution can be built from the exact binaries that were released rather
+# than from a rebuild. A rebuild would not do: the ldflags stamp a build date,
+# so it would produce different bytes for the same commit.
+.PHONY: unpack
+unpack: ## Restore dist/ binaries from the archives in dist/archives/
+	@test -d $(ARCHIVES) || { echo "no archives in $(ARCHIVES)"; exit 1; }
+	@if [ -f $(ARCHIVES)/checksums.txt ]; then \
+	  echo "verifying checksums"; \
+	  ( cd $(ARCHIVES) && $(SHASUM) -c checksums.txt ) || exit 1; \
+	fi
+	@mkdir -p $(DIST)
+	@for target in $(CROSS_TARGETS); do \
+	  goos=$${target%/*}; goarch=$${target#*/}; \
+	  ext=""; [ "$$goos" = "windows" ] && ext=".exe"; \
+	  stage=$$(mktemp -d); \
+	  if [ "$$goos" = "windows" ]; then \
+	    archive=$$(ls $(ARCHIVES)/*-$$goos-$$goarch.zip 2>/dev/null | head -1); \
+	    test -n "$$archive" || { echo "no archive for $$goos/$$goarch"; exit 1; }; \
+	    unzip -q -o "$$archive" -d "$$stage"; \
+	  else \
+	    archive=$$(ls $(ARCHIVES)/*-$$goos-$$goarch.tar.gz 2>/dev/null | head -1); \
+	    test -n "$$archive" || { echo "no archive for $$goos/$$goarch"; exit 1; }; \
+	    tar -xzf "$$archive" -C "$$stage"; \
+	  fi; \
+	  mv "$$stage/gowasm$$ext" "$(DIST)/gowasm-$$goos-$$goarch$$ext"; \
+	  chmod 0755 "$(DIST)/gowasm-$$goos-$$goarch$$ext"; \
+	  rm -rf "$$stage"; \
+	  echo "  restored gowasm-$$goos-$$goarch$$ext"; \
+	done
+
 .PHONY: npm-packages
 npm-packages: ## Build the npm launcher and per-platform packages into dist/npm/
 	@test -d $(DIST) || { echo "nothing to package; run 'make cross' first"; exit 1; }

@@ -288,7 +288,14 @@ already on your machine.
 
 `make npm-packages` builds the npm distribution into `dist/npm/` and
 `make npm-publish` pushes it, platform packages first so the launcher's
-dependencies exist before the launcher does.
+dependencies exist before the launcher does. `make unpack` restores `dist/`
+from the release archives, so the npm packages can be built from the exact
+binaries that were released rather than from a rebuild — the ldflags stamp a
+build date, so a rebuild would not produce the same bytes.
+
+Publishing to npm is its own workflow, triggered by the GitHub release being
+published. Keeping it separate means a registry failure cannot leave the
+release half-made, and it can be re-run for a tag on its own.
 
 `make cross` writes version-less binaries to `dist/`, and `make package`
 archives them into `dist/archives/` — a `.tar.gz` per unix platform, a `.zip`

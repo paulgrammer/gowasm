@@ -1,0 +1,73 @@
+name: Publish to npm
+
+on:
+  # Fires when the release workflow publishes a release, so the npm packages
+  # carry exactly the binaries that were released.
+  release:
+    types: [published]
+  # Re-run for a tag on its own, without cutting the release again.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, for example v0.1.0"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish the CLI to npm
+    runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+    steps:
+      - name: Check the npm token is configured
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "NPM_TOKEN is not set; add it as a repository secret to publish." >&2
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          # Writes the .npmrc that NODE_AUTH_TOKEN authenticates through.
+          registry-url: "https://registry.npmjs.org"
+
+      # The released archives are repackaged rather than rebuilt. A rebuild
+      # would not produce the same bytes: the ldflags stamp a build date, so
+      # the npm binaries would differ from the ones people downloaded.
+      - name: Download the release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist/archives
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist/archives --clobber
+          ls -1 dist/archives
+
+      # Verifies every archive against checksums.txt before unpacking.
+      - name: Restore the binaries
+        run: make unpack
+
+      - name: Build the npm packages
+        run: make npm-packages VERSION=${{ env.TAG }}
+
+      - name: Check what would be published
+        run: |
+          for dir in dist/npm/*/; do
+            echo "--- $dir"
+            ( cd "$dir" && npm publish --dry-run --access public 2>&1 | tail -4 )
+          done
+
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: make npm-publish VERSION=${{ env.TAG }}
