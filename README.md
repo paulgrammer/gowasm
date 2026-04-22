@@ -44,25 +44,63 @@ ships inside it, and it runs on Node 20+ and in browsers through any bundler.
 
 ## Install
 
+### npm
+
 ```sh
-npm install -g gowasm          # or: npx gowasm init
+npm install -g gowasm
 ```
+
+Or run it without installing:
+
+```sh
+npx gowasm init
+npx gowasm build
+```
+
+Or pin it to a project, which is usually what you want so everyone building the
+repository uses the same version:
+
+```sh
+npm install --save-dev gowasm
+```
+
+```jsonc
+// package.json
+{
+  "scripts": {
+    "build:wasm": "gowasm build",
+    "test:wasm": "gowasm test"
+  },
+  "devDependencies": {
+    "gowasm": "^0.1.0"
+  }
+}
+```
+
+The npm package is a launcher; the binary comes from a small platform-specific
+package (`gowasm-linux-amd64` and friends) installed as an optional dependency.
+npm resolves the `os` and `cpu` fields and fetches only the binary your machine
+can run, and no install script downloads anything — so it works under
+`--ignore-scripts`, from an offline cache, and in locked-down CI.
+
+Yarn, pnpm and bun all honour the same fields, so `yarn add -D gowasm`,
+`pnpm add -D gowasm` and `bun add -d gowasm` work too.
+
+### Shell script
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/paulgrammer/gowasm/main/install.sh | sh
 ```
 
+### Go
+
 ```sh
 go install github.com/paulgrammer/gowasm/cmd/gowasm@latest
 ```
 
-The npm package is a launcher; the binary comes from a small platform-specific
-package installed as an optional dependency. npm resolves the `os` and `cpu`
-fields and fetches only the binary your machine can run, and no install script
-downloads anything — so it works with `--ignore-scripts`, offline caches and
-locked-down CI.
+### After installing
 
-Then check the toolchain before anything else:
+Check the toolchain before anything else:
 
 ```sh
 gowasm doctor

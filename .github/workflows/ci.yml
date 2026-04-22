@@ -45,18 +45,27 @@ jobs:
       - name: Cross-compile every release platform
         run: make cross
 
-      # Builds the npm distribution and installs it the way a user would, so a
-      # broken launcher or manifest is caught here rather than after a release
-      # has already gone out.
+      # Builds the npm distribution and drives the launcher through the
+      # node_modules layout npm produces, so a broken launcher or manifest is
+      # caught here rather than after a release has gone out.
+      #
+      # Deliberately not `npm install` of the launcher: its optional
+      # dependencies resolve against the registry, which does not have these
+      # versions until the publish workflow runs, so npm would prune the
+      # platform package and the test would fail for a reason unrelated to the
+      # code being tested.
       - name: Build and smoke-test the npm packages
         run: |
           make npm-packages
           for f in dist/npm/*/package.json; do
             node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))" || exit 1
           done
-          cd "$(mktemp -d)"
-          npm init -y >/dev/null
-          npm install --silent "$GITHUB_WORKSPACE"/dist/npm/gowasm-linux-amd64
-          npm install --silent "$GITHUB_WORKSPACE"/dist/npm/gowasm
-          npx gowasm -version
-          npx gowasm doctor
+          # Every package must produce a valid tarball.
+          for d in dist/npm/*/; do ( cd "$d" && npm pack --silent >/dev/null ); done
+
+          work=$(mktemp -d)
+          mkdir -p "$work/node_modules"
+          cp -R dist/npm/gowasm "$work/node_modules/gowasm"
+          cp -R dist/npm/gowasm-linux-amd64 "$work/node_modules/gowasm-linux-amd64"
+          node "$work/node_modules/gowasm/bin/gowasm.js" -version
+          node "$work/node_modules/gowasm/bin/gowasm.js" doctor
