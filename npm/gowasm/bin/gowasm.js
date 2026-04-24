@@ -10,6 +10,11 @@
 const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 
+// The platform packages are named after this one, so the prefix is read from
+// the manifest rather than written twice. Renaming the package renames them
+// with it, and the two cannot drift apart.
+const { name: PKG_NAME } = require("../package.json");
+
 const PLATFORMS = { darwin: "darwin", linux: "linux", win32: "windows" };
 const ARCHS = { x64: "amd64", arm64: "arm64" };
 
@@ -25,7 +30,7 @@ if (!goos || !goarch) {
   process.exit(1);
 }
 
-const pkg = `gowasm-${goos}-${goarch}`;
+const pkg = `${PKG_NAME}-${goos}-${goarch}`;
 const exe = goos === "windows" ? "gowasm.exe" : "gowasm";
 
 let binary;
