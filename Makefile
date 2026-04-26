@@ -40,8 +40,9 @@ CROSS_TARGETS := \
 # holding a single binary, which is how esbuild and swc ship. npm resolves the
 # os/cpu fields and installs only the matching binary, so nothing has to be
 # downloaded by an install script.
-NPM_NAME ?= gowasm
-NPM_DIST := $(DIST)/npm
+NPM_NAME   ?= gowasm
+NPM_AUTHOR ?= paulgrammer <paulmugaya4@gmail.com>
+NPM_DIST   := $(DIST)/npm
 
 # sha256sum on Linux, shasum on macOS.
 SHASUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo "sha256sum" || echo "shasum -a 256")
@@ -157,8 +158,9 @@ npm-packages: ## Build the npm launcher and per-platform packages into dist/npm/
 	    "  \"name\": \"$$pkg\"," \
 	    "  \"version\": \"$$version\"," \
 	    "  \"description\": \"gowasm binary for $$goos $$goarch\"," \
+	    "  \"author\": \"$(NPM_AUTHOR)\"," \
 	    '  "license": "MIT",' \
-	    '  "repository": "github.com/paulgrammer/gowasm",' \
+	    '  "repository": { "type": "git", "url": "git+https://github.com/paulgrammer/gowasm.git" },' \
 	    "  \"os\": [\"$$npmos\"]," \
 	    "  \"cpu\": [\"$$npmcpu\"]," \
 	    '  "files": ["bin"],' \
@@ -176,8 +178,9 @@ npm-packages: ## Build the npm launcher and per-platform packages into dist/npm/
 	  "  \"name\": \"$(NPM_NAME)\"," \
 	  "  \"version\": \"$$version\"," \
 	  '  "description": "Turn a Go package into a typed npm package built on WebAssembly",' \
+	  "  \"author\": \"$(NPM_AUTHOR)\"," \
 	  '  "license": "MIT",' \
-	  '  "repository": "github.com/paulgrammer/gowasm",' \
+	  '  "repository": { "type": "git", "url": "git+https://github.com/paulgrammer/gowasm.git" },' \
 	  '  "keywords": ["go", "golang", "wasm", "webassembly", "codegen", "typescript"],' \
 	  '  "bin": { "gowasm": "bin/gowasm.js" },' \
 	  '  "files": ["bin", "README.md"],' \
