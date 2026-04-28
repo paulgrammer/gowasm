@@ -10,10 +10,12 @@
 const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 
-// The platform packages are named after this one, so the prefix is read from
-// the manifest rather than written twice. Renaming the package renames them
-// with it, and the two cannot drift apart.
-const { name: PKG_NAME } = require("../package.json");
+// The matching platform package is found among this package's own optional
+// dependencies, by the -<goos>-<goarch> suffix the packaging step gives them.
+// Reading it from the manifest rather than rebuilding the name means the
+// launcher can be renamed, or moved under a scope, without the platform
+// packages having to follow.
+const { optionalDependencies = {} } = require("../package.json");
 
 const PLATFORMS = { darwin: "darwin", linux: "linux", win32: "windows" };
 const ARCHS = { x64: "amd64", arm64: "arm64" };
@@ -30,8 +32,18 @@ if (!goos || !goarch) {
   process.exit(1);
 }
 
-const pkg = `${PKG_NAME}-${goos}-${goarch}`;
+const suffix = `-${goos}-${goarch}`;
+const pkg = Object.keys(optionalDependencies).find((d) => d.endsWith(suffix));
 const exe = goos === "windows" ? "gowasm.exe" : "gowasm";
+
+if (!pkg) {
+  console.error(
+    `gowasm: this build declares no platform package for ${goos}/${goarch}.\n` +
+      `Install from source instead:\n` +
+      `  go install github.com/paulgrammer/gowasm/cmd/gowasm@latest`,
+  );
+  process.exit(1);
+}
 
 let binary;
 try {

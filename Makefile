@@ -40,7 +40,13 @@ CROSS_TARGETS := \
 # holding a single binary, which is how esbuild and swc ship. npm resolves the
 # os/cpu fields and installs only the matching binary, so nothing has to be
 # downloaded by an install script.
-NPM_NAME   ?= gowasm
+# Scoped, because npm refuses the bare name: it normalises punctuation when
+# comparing, so "gowasm" collides with the abandoned "go-wasm" from 2018. The
+# binary is still called gowasm; only the install line differs.
+NPM_NAME   ?= @paulgrammer/gowasm
+# Named separately from the launcher, since these published before the launcher
+# name was settled and must keep working whatever it is called.
+NPM_PLATFORM_PREFIX ?= gowasm
 NPM_AUTHOR ?= paulgrammer <paulmugaya4@gmail.com>
 NPM_DIST   := $(DIST)/npm
 
@@ -146,7 +152,7 @@ npm-packages: ## Build the npm launcher and per-platform packages into dist/npm/
 	  ext=""; [ "$$goos" = "windows" ] && ext=".exe"; \
 	  bin="$(DIST)/gowasm-$$goos-$$goarch$$ext"; \
 	  test -f "$$bin" || { echo "missing $$bin; run 'make cross' first"; exit 1; }; \
-	  pkg="$(NPM_NAME)-$$goos-$$goarch"; \
+	  pkg="$(NPM_PLATFORM_PREFIX)-$$goos-$$goarch"; \
 	  dir="$(NPM_DIST)/$$pkg"; \
 	  mkdir -p "$$dir/bin"; \
 	  cp "$$bin" "$$dir/bin/gowasm$$ext"; \
@@ -198,7 +204,7 @@ npm-publish: ## Publish the npm packages (platform packages first, then the laun
 	@# exist on the registry before it does, or the first install of it fails.
 	@for target in $(CROSS_TARGETS); do \
 	  goos=$${target%/*}; goarch=$${target#*/}; \
-	  ( cd "$(NPM_DIST)/$(NPM_NAME)-$$goos-$$goarch" && npm publish --access public $(NPM_FLAGS) ) || exit 1; \
+	  ( cd "$(NPM_DIST)/$(NPM_PLATFORM_PREFIX)-$$goos-$$goarch" && npm publish --access public $(NPM_FLAGS) ) || exit 1; \
 	done
 	@cd "$(NPM_DIST)/$(NPM_NAME)" && npm publish --access public $(NPM_FLAGS)
 	@echo "published $(NPM_NAME)@$(VERSION)"

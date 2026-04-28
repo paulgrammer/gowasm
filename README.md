@@ -47,21 +47,21 @@ ships inside it, and it runs on Node 20+ and in browsers through any bundler.
 ### npm
 
 ```sh
-npm install -g gowasm
+npm install -g @paulgrammer/gowasm
 ```
 
 Or run it without installing:
 
 ```sh
-npx gowasm init
-npx gowasm build
+npx @paulgrammer/gowasm init
+npx @paulgrammer/gowasm build
 ```
 
 Or pin it to a project, which is usually what you want so everyone building the
 repository uses the same version:
 
 ```sh
-npm install --save-dev gowasm
+npm install --save-dev @paulgrammer/gowasm
 ```
 
 ```jsonc
@@ -72,7 +72,7 @@ npm install --save-dev gowasm
     "test:wasm": "gowasm test"
   },
   "devDependencies": {
-    "gowasm": "^0.1.0"
+    "@paulgrammer/gowasm": "^0.1.0"
   }
 }
 ```
@@ -83,8 +83,12 @@ npm resolves the `os` and `cpu` fields and fetches only the binary your machine
 can run, and no install script downloads anything — so it works under
 `--ignore-scripts`, from an offline cache, and in locked-down CI.
 
-Yarn, pnpm and bun all honour the same fields, so `yarn add -D gowasm`,
-`pnpm add -D gowasm` and `bun add -d gowasm` work too.
+However it is installed, the command it puts on your PATH is `gowasm`.
+
+The package is scoped because npm refuses the bare name: it strips punctuation
+when comparing, so `gowasm` collides with `go-wasm`, an abandoned package from
+2018. Yarn, pnpm and bun honour the same `os` and `cpu` fields, so
+`yarn add -D @paulgrammer/gowasm` and the equivalents work too.
 
 ### Shell script
 
