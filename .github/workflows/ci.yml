@@ -50,22 +50,30 @@ jobs:
       # caught here rather than after a release has gone out.
       #
       # Deliberately not `npm install` of the launcher: its optional
-      # dependencies resolve against the registry, which does not have these
-      # versions until the publish workflow runs, so npm would prune the
-      # platform package and the test would fail for a reason unrelated to the
-      # code being tested.
+      # dependencies resolve against the registry, so this would test whatever
+      # is published rather than what was just built.
+      #
+      # Nothing here hardcodes the package name or the platform. The launcher is
+      # scoped, which nests it a directory deeper, and renaming it again should
+      # not require editing this.
       - name: Build and smoke-test the npm packages
         run: |
           make npm-packages
-          for f in dist/npm/*/package.json; do
-            node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))" || exit 1
+
+          find dist/npm -maxdepth 3 -name package.json -print0 | while IFS= read -r -d '' f; do
+            node -e "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))" "$f"
+            ( cd "$(dirname "$f")" && npm pack --silent >/dev/null )
           done
-          # Every package must produce a valid tarball.
-          for d in dist/npm/*/; do ( cd "$d" && npm pack --silent >/dev/null ); done
+
+          launcher=$(dirname "$(dirname "$(find dist/npm -path '*/bin/gowasm.js' | head -1)")")
+          name=$(node -p "require('./$launcher/package.json').name")
+          platform=$(node -p "({darwin:'darwin',linux:'linux',win32:'windows'})[process.platform]+'-'+({x64:'amd64',arm64:'arm64'})[process.arch]")
 
           work=$(mktemp -d)
-          mkdir -p "$work/node_modules"
-          cp -R dist/npm/gowasm "$work/node_modules/gowasm"
-          cp -R dist/npm/gowasm-linux-amd64 "$work/node_modules/gowasm-linux-amd64"
-          node "$work/node_modules/gowasm/bin/gowasm.js" -version
-          node "$work/node_modules/gowasm/bin/gowasm.js" doctor
+          mkdir -p "$work/node_modules/$(dirname "$name")"
+          cp -R "$launcher" "$work/node_modules/$name"
+          cp -R "dist/npm/gowasm-$platform" "$work/node_modules/gowasm-$platform"
+
+          echo "launcher: $name (platform package gowasm-$platform)"
+          node "$work/node_modules/$name/bin/gowasm.js" -version
+          node "$work/node_modules/$name/bin/gowasm.js" doctor
