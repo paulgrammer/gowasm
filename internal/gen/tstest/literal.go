@@ -47,10 +47,18 @@ func (l *literalizer) render(t types.Type, raw string) string {
 func (l *literalizer) walk(t types.Type, v any) string {
 	if v == nil {
 		// A nil Go slice or map records as null, but the generated signature
-		// says T[] or Record<...>. Both decode to the same thing on the Go
-		// side, so the fixture uses the form the type admits.
-		switch types.Unalias(t).(type) {
-		case *types.Slice, *types.Array:
+		// says T[], Uint8Array or Record<...>. All three decode to the same
+		// thing on the Go side, so the fixture uses the form the type admits.
+		switch u := types.Unalias(t).(type) {
+		case *types.Slice:
+			if isByteElem(u.Elem()) {
+				return l.bytes("")
+			}
+			return "[]"
+		case *types.Array:
+			if isByteElem(u.Elem()) {
+				return l.bytes("")
+			}
 			return "[]"
 		case *types.Map:
 			return "{}"
