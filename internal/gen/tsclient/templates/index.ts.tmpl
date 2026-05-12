@@ -21,12 +21,16 @@ export async function createClient(opts?: LoadOptions): Promise<Client> {
 
 // A lazily-booted shared instance backs the named exports below, so the common
 // case is a plain import with no lifecycle to manage.
+//
+// A function whose JavaScript name is a reserved word has no named export here,
+// because `export const new` is a syntax error. It is still on the client
+// object returned by createClient().
 let shared: Promise<Client> | undefined;
 const lazy = (): Promise<Client> => (shared ??= createClient());
-{{range .Funcs}}
+{{range .Funcs}}{{if not .Reserved}}
 export const {{.JSName}}: {{$.APIName}}["{{.JSName}}"] = (...args) =>
   lazy().then((c) => c.{{.JSName}}(...args));
-{{- end}}
+{{- end}}{{end}}
 
 /** Tears down the shared instance. A later call boots a fresh one. */
 export async function dispose(): Promise<void> {

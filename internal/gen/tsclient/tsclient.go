@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 	"unicode"
@@ -31,6 +32,19 @@ type Options struct {
 	Namespace string
 	// Targets selects which entry points to emit: "node", "browser", or both.
 	Targets []string
+}
+
+// ReservedNames lists the exported functions whose JavaScript name cannot be a
+// bare named export, so callers can be told rather than left to wonder.
+func ReservedNames(mod *scan.Module) []string {
+	var out []string
+	for _, f := range mod.Funcs {
+		if reservedJS[f.JSName] {
+			out = append(out, f.GoName+" -> "+f.JSName)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Generate renders every TypeScript file for mod.
@@ -123,6 +137,24 @@ func loaderFor(target string) (tmpl, file, fn string, err error) {
 	}
 }
 
+// reservedJS lists the words that cannot be a variable declaration name in
+// JavaScript. A Go function named New maps to new, which is legal as an object
+// property but not as `export const new`, and New is far too common a Go name
+// to reject outright.
+var reservedJS = map[string]bool{
+	"await": true, "break": true, "case": true, "catch": true, "class": true,
+	"const": true, "continue": true, "debugger": true, "default": true,
+	"delete": true, "do": true, "else": true, "enum": true, "export": true,
+	"extends": true, "false": true, "finally": true, "for": true,
+	"function": true, "if": true, "implements": true, "import": true,
+	"in": true, "instanceof": true, "interface": true, "let": true,
+	"new": true, "null": true, "package": true, "private": true,
+	"protected": true, "public": true, "return": true, "static": true,
+	"super": true, "switch": true, "this": true, "throw": true, "true": true,
+	"try": true, "typeof": true, "var": true, "void": true, "while": true,
+	"with": true, "yield": true,
+}
+
 // tsFunc is the per-function view the templates render.
 type tsFunc struct {
 	JSName     string
@@ -133,6 +165,13 @@ type tsFunc struct {
 	CallArgs   string // "text, mode" — or "text, rest" for a variadic tail
 	// Decode converts a binary-bearing result, in terms of the variable `v`.
 	Decode string
+	// Reserved marks a name that cannot be a bare named export. The function is
+	// still reachable on the client object.
+	Reserved bool
+	// Key is the name as written in an interface or object literal, quoted when
+	// it is a reserved word. Unquoted, `new(): T` would be read as a construct
+	// signature rather than a method called new.
+	Key string
 }
 
 func renderFuncs(mod *scan.Module, cdc *codec) []tsFunc {
@@ -155,6 +194,8 @@ func renderFuncs(mod *scan.Module, cdc *codec) []tsFunc {
 
 		fn := tsFunc{
 			JSName:     f.JSName,
+			Reserved:   reservedJS[f.JSName],
+			Key:        memberKey(f.JSName),
 			Doc:        f.Doc,
 			TSParams:   strings.Join(params, ", "),
 			TSReturn:   f.TSReturn(),
@@ -173,6 +214,14 @@ func renderFuncs(mod *scan.Module, cdc *codec) []tsFunc {
 		out = append(out, fn)
 	}
 	return out
+}
+
+// memberKey quotes a member name when it is a reserved word.
+func memberKey(name string) string {
+	if reservedJS[name] {
+		return strconv.Quote(name)
+	}
+	return name
 }
 
 // codecImports lists the conversion helpers client.ts references.

@@ -127,6 +127,11 @@ func generate(cfg *config.Config, env *goenv.Env, out io.Writer, opts genOptions
 		return nil, err
 	}
 
+	for _, name := range tsclient.ReservedNames(mod) {
+		fmt.Fprintf(out, "  note: %s is a JavaScript reserved word, so it has no named export; "+
+			"reach it through createClient()\n", name)
+	}
+
 	fmt.Fprintf(out, "generated %d file(s) in %s\n", w.written+1, rel(cfg.Dir, outDir))
 	return &result{Module: mod, Written: w.written, Same: w.same, Bridge: bridge}, nil
 }

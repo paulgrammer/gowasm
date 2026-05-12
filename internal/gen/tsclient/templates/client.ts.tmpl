@@ -6,7 +6,7 @@ import type { Instance } from "../runtime/core.js";
 /** Every exported function of the Go package `{{.PkgName}}`. */
 export interface {{.APIName}} {
 {{- range .Funcs}}
-{{doc .Doc "  "}}  {{.JSName}}({{.TSParams}}): Promise<{{.TSReturn}}>;
+{{doc .Doc "  "}}  {{.Key}}({{.TSParams}}): Promise<{{.TSReturn}}>;
 {{- end}}
 }
 
@@ -17,9 +17,9 @@ export function bind(rt: Instance): {{.APIName}} {
   return {
 {{- range .Funcs}}
 {{- if .Decode}}
-    {{.JSName}}: async ({{.BindParams}}) => {{.Decode}},
+    {{.Key}}: async ({{.BindParams}}) => {{.Decode}},
 {{- else}}
-    {{.JSName}}: async ({{.BindParams}}) => rt.call("{{.JSName}}", [{{.CallArgs}}]),
+    {{.Key}}: async ({{.BindParams}}) => rt.call("{{.JSName}}", [{{.CallArgs}}]),
 {{- end}}
 {{- end}}
   };
