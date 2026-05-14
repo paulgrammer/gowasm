@@ -137,10 +137,13 @@ func loaderFor(target string) (tmpl, file, fn string, err error) {
 	}
 }
 
-// reservedJS lists the words that cannot be a variable declaration name in
-// JavaScript. A Go function named New maps to new, which is legal as an object
-// property but not as `export const new`, and New is far too common a Go name
-// to reject outright.
+// reservedJS lists the words that cannot be a variable declaration name in a
+// JavaScript module. Most are reserved words; eval and arguments are not, but
+// are equally restricted under strict mode, which modules always are.
+//
+// All of them are legal as object properties, so a function named New or Eval
+// still works on the client object. Only the bare named export is impossible,
+// and both are far too common as Go names to reject outright.
 var reservedJS = map[string]bool{
 	"await": true, "break": true, "case": true, "catch": true, "class": true,
 	"const": true, "continue": true, "debugger": true, "default": true,
@@ -153,6 +156,8 @@ var reservedJS = map[string]bool{
 	"super": true, "switch": true, "this": true, "throw": true, "true": true,
 	"try": true, "typeof": true, "var": true, "void": true, "while": true,
 	"with": true, "yield": true,
+	// Not reserved words, but binding either is a strict mode error.
+	"eval": true, "arguments": true,
 }
 
 // tsFunc is the per-function view the templates render.

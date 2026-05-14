@@ -26,7 +26,14 @@ import (
 )
 
 // Fixture is one recorded call.
+//
+// NonDeterministic marks a call whose result changed between two identical
+// runs, which means it cannot be asserted on. A generated test that is flaky
+// is worse than no test at all, so these are reported and skipped rather than
+// emitted and left to fail intermittently.
 type Fixture struct {
+	NonDeterministic bool `json:"-"`
+
 	Example string   `json:"-"`
 	JSFunc  string   `json:"-"`
 	Pos     string   `json:"-"`
@@ -49,7 +56,13 @@ type record struct {
 }
 
 // Record runs every call and captures its outcome.
-func Record(dir string, mod *scan.Module, calls []scan.ExampleCall) ([]Fixture, error) {
+//
+// execWrapper is the go_js_wasm_exec helper from GOROOT. The recorder runs
+// under js/wasm, the same target the generated tests exercise, rather than on
+// the host: anything that differs between the two -- timing, word size,
+// available syscalls -- would otherwise be baked into an expectation that the
+// tests then fail to meet.
+func Record(dir, execWrapper string, mod *scan.Module, calls []scan.ExampleCall) ([]Fixture, error) {
 	if len(calls) == 0 {
 		return nil, nil
 	}
@@ -73,21 +86,16 @@ func Record(dir string, mod *scan.Module, calls []scan.ExampleCall) ([]Fixture, 
 	}
 	defer ov.Close()
 
-	cmd := exec.Command("go", "run", "-overlay", ov.Path, "./.gowasm/recorder")
-	cmd.Dir = dir
-	// Deliberately the host toolchain, not js/wasm: this program has to run
-	// here, and encoding/json produces identical output on both.
-	cmd.Env = os.Environ()
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("recording example fixtures: %w\n%s", err, stderr.String())
+	records, err := runRecorder(dir, execWrapper, ov.Path)
+	if err != nil {
+		return nil, err
 	}
-
-	var records []record
-	if err := json.Unmarshal(stdout.Bytes(), &records); err != nil {
-		return nil, fmt.Errorf("decoding recorded fixtures: %w", err)
+	// Run it a second time and compare. A call whose result changes between two
+	// identical runs -- a timestamp, a duration, a random value, map ordering --
+	// cannot be asserted on, and is skipped rather than made into a flaky test.
+	second, err := runRecorder(dir, execWrapper, ov.Path)
+	if err != nil {
+		return nil, err
 	}
 	if len(records) != len(calls) {
 		return nil, fmt.Errorf("recorded %d fixture(s) for %d call(s)", len(records), len(calls))
@@ -97,11 +105,12 @@ func Record(dir string, mod *scan.Module, calls []scan.ExampleCall) ([]Fixture, 
 	for i, c := range calls {
 		r := records[i]
 		f := Fixture{
-			Example: c.Example,
-			JSFunc:  c.JSFunc,
-			Pos:     c.Pos,
-			Error:   r.Error,
-			Void:    r.Void,
+			NonDeterministic: i < len(second) && !sameOutcome(r, second[i]),
+			Example:          c.Example,
+			JSFunc:           c.JSFunc,
+			Pos:              c.Pos,
+			Error:            r.Error,
+			Void:             r.Void,
 		}
 		// The arguments come back re-encoded from their decoded Go values, so
 		// every non-omitempty field is present and the literal is guaranteed to
@@ -115,6 +124,41 @@ func Record(dir string, mod *scan.Module, calls []scan.ExampleCall) ([]Fixture, 
 		out = append(out, f)
 	}
 	return out, nil
+}
+
+// runRecorder executes the generated program once and decodes what it printed.
+func runRecorder(dir, execWrapper, overlayPath string) ([]record, error) {
+	args := []string{"run", "-overlay", overlayPath}
+	env := os.Environ()
+	if execWrapper != "" {
+		// The explicit -exec form: cmd/go does not add lib/wasm to PATH, so a
+		// stale wrapper from an older Go would otherwise be found first.
+		args = append(args, "-exec="+execWrapper)
+		env = append(env, "GOOS=js", "GOARCH=wasm")
+	}
+	args = append(args, "./.gowasm/recorder")
+
+	cmd := exec.Command("go", args...)
+	cmd.Dir = dir
+	cmd.Env = env
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("recording example fixtures: %w\n%s", err, stderr.String())
+	}
+
+	var records []record
+	if err := json.Unmarshal(stdout.Bytes(), &records); err != nil {
+		return nil, fmt.Errorf("decoding recorded fixtures: %w", err)
+	}
+	return records, nil
+}
+
+// sameOutcome reports whether two recordings of the same call agree.
+func sameOutcome(a, b record) bool {
+	return string(a.Result) == string(b.Result) && a.Error == b.Error && a.Void == b.Void
 }
 
 func renderRecorder(mod *scan.Module, calls []scan.ExampleCall, byName map[string]scan.Func) ([]byte, error) {

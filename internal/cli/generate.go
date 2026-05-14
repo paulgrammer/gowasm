@@ -115,7 +115,7 @@ func generate(cfg *config.Config, env *goenv.Env, out io.Writer, opts genOptions
 		}
 	}
 
-	if err := writeFixtureTests(cfg, mod, testDir, w, out); err != nil {
+	if err := writeFixtureTests(cfg, env, mod, testDir, w, out); err != nil {
 		return nil, err
 	}
 
@@ -138,7 +138,7 @@ func generate(cfg *config.Config, env *goenv.Env, out io.Writer, opts genOptions
 
 // writeFixtureTests records the package's Go Example calls by running them, and
 // emits the behavioural suite. A package with no Examples simply gets none.
-func writeFixtureTests(cfg *config.Config, mod *scan.Module, testDir string, w *writer, out io.Writer) error {
+func writeFixtureTests(cfg *config.Config, env *goenv.Env, mod *scan.Module, testDir string, w *writer, out io.Writer) error {
 	calls, skipped, err := scan.LoadExamples(scan.Options{
 		Dir:     cfg.Dir,
 		Pattern: cfg.Package,
@@ -158,10 +158,24 @@ func writeFixtureTests(cfg *config.Config, mod *scan.Module, testDir string, w *
 		return nil
 	}
 
-	recorded, err := fixtures.Record(cfg.Dir, mod, calls)
+	recorded, err := fixtures.Record(cfg.Dir, env.JSExecWrapper(), mod, calls)
 	if err != nil {
 		return err
 	}
+
+	// A call whose result changes between runs cannot be asserted on. Naming it
+	// is more useful than emitting a test that fails at random.
+	kept := recorded[:0]
+	for _, f := range recorded {
+		if f.NonDeterministic {
+			fmt.Fprintf(out, "  note: %s calls %s, whose result differs between runs; no fixture recorded (%s)\n",
+				f.Example, f.JSFunc, f.Pos)
+			continue
+		}
+		kept = append(kept, f)
+	}
+	recorded = kept
+
 	files, err := tstest.GenerateFixtures(mod, recorded)
 	if err != nil {
 		return err
@@ -170,6 +184,9 @@ func writeFixtureTests(cfg *config.Config, mod *scan.Module, testDir string, w *
 		if err := w.write(filepath.Join(testDir, f.Path), f.Content); err != nil {
 			return err
 		}
+	}
+	if len(recorded) == 0 {
+		return nil
 	}
 	fmt.Fprintf(out, "recorded %d fixture(s) from Go Example functions\n", len(recorded))
 	return nil
