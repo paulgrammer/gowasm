@@ -257,10 +257,28 @@ Each is a self-contained module. Run `gowasm test` inside any of them.
 
 | Example | Shows |
 | --- | --- |
-| [`examples/urls`](examples/urls) | The basics, and the only one targeting the browser as well as Node |
-| [`examples/blob`](examples/blob) | Binary exchange: gzip, digests, `Uint8Array[]`, variadic binary |
-| [`examples/worker-pool`](examples/worker-pool) | [Brandur Leach's Go worker pool](https://brandur.org/go-worker-pool), driven from Node |
-| [`examples/ginapi`](examples/ginapi) | A [Gin](https://gin-gonic.com) application inside WebAssembly, behind a real Node HTTP server |
+| [`urls`](examples/urls) | The basics, and the only one targeting the browser as well as Node |
+| [`regex`](examples/regex) | RE2: linear-time matching that cannot be made to hang |
+| [`money`](examples/money) | Exact arithmetic where JavaScript numbers cannot be |
+| [`text`](examples/text) | Unicode operations `Intl` does not cover |
+| [`sanitize`](examples/sanitize) | Allowlist HTML cleaning with no DOM and no jsdom |
+| [`expr`](examples/expr) | Evaluating user-written rules without `eval` |
+| [`gofmt`](examples/gofmt) | Go's own parser and formatter, in the browser |
+| [`highlight`](examples/highlight) | 297 languages, no per-language grammar fetch |
+| [`excel`](examples/excel) | Reading and writing real `.xlsx`, entirely in memory |
+| [`cue`](examples/cue) | A config language with no JavaScript implementation at all |
+| [`git`](examples/git) | A real git repository in memory: commits, branches, diffs |
+| [`chess`](examples/chess) | A domain model: enums, nested structs, legality |
+| [`chip8`](examples/chip8) | A framebuffer arriving as a `Uint8Array` |
+| [`blob`](examples/blob) | Binary exchange: gzip, digests, `Uint8Array[]`, variadic binary |
+| [`worker-pool`](examples/worker-pool) | [Brandur Leach's Go worker pool](https://brandur.org/go-worker-pool), driven from Node |
+| [`ginapi`](examples/ginapi) | A [Gin](https://gin-gonic.com) application behind a real Node HTTP server |
+
+The first few are the point of the tool: each is something the JavaScript
+ecosystem either does worse or cannot do at all. `regex` is the sharpest —
+JavaScript's engine backtracks, so a user-supplied pattern can hang the event
+loop. Measured on `(a+)+$` against forty `a`s and a `b`: V8 takes 53 seconds,
+Go returns in 0.6 milliseconds.
 
 The Gin example is worth reading if you want an HTTP server. WebAssembly cannot
 listen on a port — Go's `net` package there is an in-process fake that nothing
