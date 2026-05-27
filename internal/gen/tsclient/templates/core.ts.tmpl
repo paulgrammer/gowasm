@@ -141,6 +141,31 @@ function cancelPendingTimers(go: Go): void {
   pendingTimers.clear();
 }
 
+/**
+ * Runs one bound call, turning anything it throws into a GoError.
+ *
+ * Argument conversion happens before the call reaches the instance, so a bad
+ * argument would otherwise surface as a raw TypeError from inside the codec
+ * rather than as the GoError every other failure produces. Every rejection
+ * from this API is a GoError, and this is what makes that true.
+ */
+export async function guard<T>(name: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (cause) {
+    // An error raised by Go already carries its own context and is passed
+    // through untouched. Anything else came from this side -- almost always a
+    // bad argument failing conversion -- and needs the function name, since a
+    // bare "Cannot read properties of undefined" says nothing about where.
+    if (cause instanceof GoError) throw cause;
+    throw new GoError(`${name}: ${messageOf(cause)}`, { cause });
+  }
+}
+
+function messageOf(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
 function asGoError(cause: unknown): GoError {
   if (cause instanceof GoError) return cause;
   if (cause instanceof Error) {

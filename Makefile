@@ -7,7 +7,7 @@ GO       ?= go
 BIN      := bin/gowasm
 DIST     := dist
 ARCHIVES := dist/archives
-EXAMPLES := urls blob worker-pool ginapi \
+EXAMPLES := urls blob worker-pool ginapi pdf \
             regex money gofmt chip8 chess sanitize expr text \
             highlight excel cue git
 GOROOT_  := $(shell $(GO) env GOROOT)

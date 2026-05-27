@@ -19,14 +19,31 @@ import (
 // conversion exactly where the bytes are, however deeply nested.
 type literalizer struct {
 	structs map[string]scan.Struct
+	// enums maps a named type to the literals it admits, so a recorded value
+	// outside that set can be cast rather than emitted as a type error.
+	enums map[string]map[string]bool
+	// casts records the enum names that needed casting, so they can be
+	// imported.
+	casts map[string]bool
 	// usesBytes records whether the helper needs emitting.
 	usesBytes bool
 }
 
 func newLiteralizer(mod *scan.Module) *literalizer {
-	l := &literalizer{structs: map[string]scan.Struct{}}
+	l := &literalizer{
+		structs: map[string]scan.Struct{},
+		enums:   map[string]map[string]bool{},
+		casts:   map[string]bool{},
+	}
 	for _, s := range mod.Structs {
 		l.structs[s.Name] = s
+	}
+	for _, e := range mod.Enums {
+		members := map[string]bool{}
+		for _, m := range e.Members {
+			members[m.Literal] = true
+		}
+		l.enums[e.Name] = members
 	}
 	return l
 }
@@ -98,10 +115,20 @@ func (l *literalizer) walk(t types.Type, v any) string {
 		return l.walk(u.Elem(), v)
 
 	case *types.Named:
-		if s, known := l.structs[u.Obj().Name()]; known {
+		name := u.Obj().Name()
+		if s, known := l.structs[name]; known {
 			return l.walkStruct(s, v)
 		}
-		return l.walk(u.Underlying(), v)
+		// An Example may deliberately pass a value outside an enum, to show
+		// what the error is. It is still the call that was recorded, so it is
+		// cast rather than dropped. This has to happen at any depth: the value
+		// may be a field of a struct inside a slice.
+		rendered := l.walk(u.Underlying(), v)
+		if members, isEnum := l.enums[name]; isEnum && !members[rendered] {
+			l.casts[name] = true
+			return fmt.Sprintf("%s as %s", rendered, name)
+		}
+		return rendered
 
 	default:
 		return jsonValue(v)

@@ -72,19 +72,6 @@ func GenerateFixtures(mod *scan.Module, recorded []fixtures.Fixture) ([]File, er
 		variadic[f.JSName] = f.Variadic
 	}
 	lit := newLiteralizer(mod)
-	// Literal unions are the one place a recorded argument can be well-formed
-	// JSON and still not a member of its TypeScript type: an Example that
-	// deliberately passes an invalid enum value, to show what the error is.
-	enums := map[string]map[string]bool{}
-	for _, e := range mod.Enums {
-		members := map[string]bool{}
-		for _, m := range e.Members {
-			members[m.Literal] = true
-		}
-		enums[e.Name] = members
-	}
-
-	casts := map[string]bool{}
 	seen := map[string]int{}
 	views := make([]Fixture, 0, len(recorded))
 	for _, f := range recorded {
@@ -100,7 +87,7 @@ func GenerateFixtures(mod *scan.Module, recorded []fixtures.Fixture) ([]File, er
 			Pos:     f.Pos,
 			JSFunc:  f.JSFunc,
 			Title:   strconv.Quote(title + " -> " + f.JSFunc),
-			Args:    renderArgs(lit, f.Args, params[f.JSFunc], variadic[f.JSFunc], enums, casts),
+			Args:    renderArgs(lit, f.Args, params[f.JSFunc], variadic[f.JSFunc]),
 			Result:  renderResult(lit, f.Result, results[f.JSFunc]),
 			Void:    f.Void,
 		}
@@ -114,8 +101,8 @@ func GenerateFixtures(mod *scan.Module, recorded []fixtures.Fixture) ([]File, er
 		views = append(views, v)
 	}
 
-	imports := make([]string, 0, len(casts))
-	for name := range casts {
+	imports := make([]string, 0, len(lit.casts))
+	for name := range lit.casts {
 		imports = append(imports, name)
 	}
 	sort.Strings(imports)
@@ -134,15 +121,10 @@ func GenerateFixtures(mod *scan.Module, recorded []fixtures.Fixture) ([]File, er
 // renderArgs writes the recorded arguments as TypeScript, casting any value
 // that its parameter's type does not admit. The cast keeps the call intact
 // while making it obvious the value is deliberately out of domain.
-func renderArgs(lit *literalizer, args []string, params []scan.Param, isVariadic bool, enums map[string]map[string]bool, casts map[string]bool) string {
+func renderArgs(lit *literalizer, args []string, params []scan.Param, isVariadic bool) string {
 	out := make([]string, 0, len(args))
 	for i, a := range args {
 		if i < len(params) {
-			if members, isEnum := enums[params[i].TS]; isEnum && !members[a] {
-				out = append(out, fmt.Sprintf("%s as %s", a, params[i].TS))
-				casts[params[i].TS] = true
-				continue
-			}
 			rendered := lit.render(params[i].Type, a)
 			// The recorded form packs a variadic tail into one array, but the
 			// TypeScript signature takes a rest parameter, so spread it back.

@@ -2,9 +2,9 @@
 package: .
 out: ./node
 npm:
-    name: gowasm-example-blob
+    name: gowasm-example-pdf
     version: 0.1.0
-    description: Binary data exchange between Go and TypeScript, using typed arrays
+    description: Create and manipulate PDFs without uploading them anywhere
     license: MIT
 targets:
     - node
