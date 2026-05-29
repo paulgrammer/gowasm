@@ -1,0 +1,103 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Rules without eval · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>User-written rules, without <code>eval</code></h1>
+    <p>
+      Letting users write a condition usually means <code>eval</code> or
+      <code>new Function</code>, which hands whoever wrote the string
+      everything the page can do. This is a small expression language: no I/O,
+      no unbounded loops, and no reach beyond the data you pass in. Type errors
+      are caught when the rule is compiled, not when it runs.
+    </p>
+  </header>
+
+  <div class="panel">
+    <h2>Rule</h2>
+    <input id="rule" spellcheck="false"
+      value='age >= 18 and country in ["KE", "UG", "TZ"] and not banned' />
+    <label for="env">Data (JSON)</label>
+    <textarea id="env" rows="5" spellcheck="false">{
+  "age": 30,
+  "country": "KE",
+  "banned": false
+}</textarea>
+  </div>
+
+  <div class="grid2">
+    <div class="panel">
+      <h2>Result</h2>
+      <div class="out" id="out">…</div>
+    </div>
+    <div class="panel">
+      <h2>Compiled bytecode</h2>
+      <div class="out" id="asm" style="max-height:14rem"></div>
+      <p class="muted" style="font-size:.8rem;margin-top:.5rem">
+        A fixed instruction set with no escape from it. This is the difference
+        from <code>eval</code>, made visible.
+      </p>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>There is no way out</h2>
+    <p class="muted" style="font-size:.85rem">
+      These all fail to compile, because the language simply has no such thing.
+    </p>
+    <div class="out" id="escapes">…</div>
+  </div>
+</main>
+
+<script type="module">
+  import { load, onInput } from "../shared/demo.js";
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/expr/index.browser.js", null);
+  const client = await api.createClient();
+
+  async function update() {
+    let env;
+    try {
+      env = JSON.parse($("env").value);
+    } catch (err) {
+      $("out").className = "out err";
+      $("out").textContent = "the data is not valid JSON: " + err.message;
+      return;
+    }
+    try {
+      const v = await client.eval($("rule").value, env);
+      $("out").className = "out";
+      $("out").textContent = `${v.kind}\n\n${JSON.stringify(v.json, null, 2)}`;
+      const p = await client.compile($("rule").value, env);
+      $("asm").textContent = p.disassembly;
+    } catch (err) {
+      $("out").className = "out err";
+      $("out").textContent = err.message;
+      $("asm").textContent = "";
+    }
+  }
+
+  const attempts = [
+    'require("fs")',
+    'process.exit(1)',
+    'fetch("https://evil.example")',
+    'globalThis',
+    'while true { }',
+  ];
+  const results = [];
+  for (const a of attempts) {
+    try {
+      await client.eval(a, {});
+      results.push(`${a.padEnd(32)} evaluated — that would be a bug`);
+    } catch (err) {
+      results.push(`${a.padEnd(32)} rejected`);
+    }
+  }
+  $("escapes").textContent = results.join("\n");
+
+  onInput($("rule"), update);
+  onInput($("env"), update);
+  update();
+</script>

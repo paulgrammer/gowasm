@@ -1,0 +1,83 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>URL extraction · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>URL extraction</h1>
+    <p>
+      The smallest example, and the one the README opens with. It exists to show
+      the shape of the generated API: an enum from Go constants, a struct with
+      an optional field, a slice result, and an error that arrives as a rejected
+      promise.
+    </p>
+  </header>
+
+  <div class="panel">
+    <h2>Text</h2>
+    <textarea id="text" rows="5" spellcheck="false">See https://go.dev and pkg.go.dev/x for docs, or mail ada@example.com. Also http://localhost:8080/health.</textarea>
+    <div class="row" style="margin-top:.6rem">
+      <div style="flex:0 0 12rem">
+        <label for="mode">Strictness</label>
+        <select id="mode">
+          <option value="relaxed">relaxed — also schemeless</option>
+          <option value="strict">strict — scheme required</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="panel">
+      <h2>Matches</h2>
+      <table><thead><tr><th>Raw</th><th>Scheme</th><th>Host</th><th class="num">At</th></tr></thead>
+      <tbody id="rows"></tbody></table>
+    </div>
+    <div class="panel">
+      <h2>Counts and tally</h2>
+      <div class="out" id="stats"></div>
+      <label style="margin-top:.8rem">Invalid strictness, to show the error path</label>
+      <div class="out" id="err"></div>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+  import { load, onInput } from "../shared/demo.js";
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/urls/index.browser.js", null);
+
+  async function update() {
+    const text = $("text").value;
+    try {
+      const matches = await api.extractURLs(text, $("mode").value);
+      $("rows").innerHTML = matches.length
+        ? matches.map((m) =>
+            `<tr><td><code>${m.raw}</code></td><td>${m.scheme ?? "<span class='muted'>—</span>"}</td>` +
+            `<td>${m.host}</td><td class="num">${m.offset}</td></tr>`).join("")
+        : `<tr><td colspan="4" class="muted">no matches</td></tr>`;
+
+      const [count, hosts] = await api.counts(text);
+      const tally = await api.tally(text);
+      const first = await api.firstHost(text);
+      $("stats").textContent =
+        `urls          ${count}\n` +
+        `hosts         ${hosts}\n` +
+        `first host    ${first ? first.host : "null (a nil pointer, typed as Match | null)"}\n\n` +
+        Object.entries(tally).map(([h, n]) => `  ${h.padEnd(20)} ${n}`).join("\n");
+    } catch (err) {
+      $("stats").textContent = err.message;
+    }
+
+    try {
+      await api.extractURLs(text, "sloppy");
+    } catch (err) {
+      $("err").className = "out err";
+      $("err").textContent = `${err.name}: ${err.message}`;
+    }
+  }
+  onInput($("text"), update);
+  $("mode").onchange = update;
+  update();
+</script>

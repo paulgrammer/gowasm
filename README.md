@@ -251,6 +251,24 @@ TypeScript. The expectations are produced by your own code, so they cannot drift
 from it — change the Go, re-run, and they follow. Calls it cannot reproduce are
 reported by name, never dropped silently.
 
+## Demos
+
+Reading a test suite tells you the code is correct; it does not show you
+anything. `make demo` builds every browser-capable example and serves a page
+per example that you can actually use:
+
+```sh
+make demo        # builds, then serves on http://localhost:8080
+```
+
+The regex one is the demonstration worth seeing first: it races V8's
+backtracking engine against Go's RE2 on the same input, in the same tab. At
+24 characters V8 takes seconds and the page freezes, because a backtracking
+match cannot be interrupted. Go returns in well under a millisecond.
+
+Everything runs locally. The PDF, spreadsheet and binary demos exist partly to
+make the point that none of it is uploaded anywhere.
+
 ## Examples
 
 Each is a self-contained module. Run `gowasm test` inside any of them.

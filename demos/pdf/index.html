@@ -1,0 +1,128 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>PDF toolkit · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<style>
+  iframe { width: 100%; height: 28rem; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+</style>
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>PDFs that never leave the page</h1>
+    <p>
+      Create, merge, extract pages, watermark, rotate and encrypt. Every one of
+      those normally means uploading the document to someone's server. Here it
+      happens in this tab: no upload, no temporary file, nothing to retain.
+      Drop a PDF of your own if you want to prove it.
+    </p>
+  </header>
+
+  <div class="panel">
+    <h2>Document</h2>
+    <div class="row">
+      <div><label for="title">Title</label><input id="title" value="Invoice 2026-001" /></div>
+      <div><label for="body">Subtitle</label><input id="body" value="Generated inside WebAssembly" /></div>
+    </div>
+    <div class="row" style="margin-top:.6rem">
+      <div style="flex:0 0 auto"><button id="create">Create</button></div>
+      <div style="flex:0 0 auto"><button id="pick" class="secondary">Open a PDF</button>
+        <input type="file" id="file" accept="application/pdf" hidden /></div>
+    </div>
+    <p class="status" id="status"></p>
+  </div>
+
+  <div class="panel">
+    <h2>Operations</h2>
+    <div class="row">
+      <div style="flex:0 0 auto"><button id="merge" class="secondary" disabled>Merge with itself</button></div>
+      <div style="flex:0 0 auto"><button id="first" class="secondary" disabled>Keep page 1</button></div>
+      <div style="flex:0 0 auto"><button id="rotate" class="secondary" disabled>Rotate 90°</button></div>
+      <div style="flex:0 0 auto"><button id="mark" class="secondary" disabled>Watermark</button></div>
+      <div style="flex:0 0 auto"><button id="lock" class="secondary" disabled>Encrypt</button></div>
+      <div style="flex:0 0 auto"><button id="dl" disabled>Download</button></div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="panel">
+      <h2>Structure</h2>
+      <div class="out" id="info">…</div>
+    </div>
+    <div class="panel">
+      <h2>Preview</h2>
+      <iframe id="view" title="PDF preview"></iframe>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+  import { load, download } from "../shared/demo.js";
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/pdf/index.browser.js", $("status"));
+
+  let doc = null, url = null, password = "";
+
+  async function setDoc(bytes, note) {
+    doc = bytes;
+    for (const id of ["merge", "first", "rotate", "mark", "lock", "dl"]) $(id).disabled = false;
+
+    try {
+      const d = await api.info(doc, password);
+      $("info").className = "out";
+      $("info").textContent = [
+        `pages       ${d.pages}`,
+        `size        ${d.bytes.toLocaleString()} bytes`,
+        `version     PDF ${d.version}`,
+        `encrypted   ${d.encrypted}`,
+        ``,
+        ...d.sizes.map((s, i) => `page ${i + 1}      ${s.width.toFixed(0)} x ${s.height.toFixed(0)} pt`),
+      ].join("\n");
+    } catch (err) {
+      $("info").className = "out err";
+      $("info").textContent = err.message;
+    }
+
+    if (url) URL.revokeObjectURL(url);
+    url = URL.createObjectURL(new Blob([doc], { type: "application/pdf" }));
+    $("view").src = url;
+    $("status").textContent = note;
+  }
+
+  async function op(name, fn) {
+    try {
+      $("status").textContent = `${name}…`;
+      await setDoc(await fn(), name);
+    } catch (err) {
+      $("status").innerHTML = `<span class="err">${err.message}</span>`;
+    }
+  }
+
+  $("create").onclick = () => { password = ""; return op("created", () => api.create([
+    { text: [
+      { value: $("title").value, anchor: "topcenter", size: 24, font: "" },
+      { value: $("body").value, anchor: "center", size: 12, font: "" },
+    ] },
+    { text: [{ value: "Terms and conditions", anchor: "topcenter", size: 18, font: "" }] },
+  ])); };
+
+  $("merge").onclick = () => op("merged", () => api.merge([doc, doc]));
+  $("first").onclick = () => op("page 1 kept", () => api.extractPages(doc, ["1"]));
+  $("rotate").onclick = () => op("rotated", () => api.rotate(doc, 90, []));
+  $("mark").onclick = () => op("watermarked", () => api.watermark(doc, "CONFIDENTIAL", []));
+  $("lock").onclick = () => op("encrypted with password 'open-me'", async () => {
+    const out = await api.encrypt(doc, "open-me", "own-me");
+    password = "";  // deliberately not remembered, so Info reports it as locked
+    return out;
+  });
+  $("dl").onclick = () => download(doc, "document.pdf", "application/pdf");
+
+  $("pick").onclick = () => $("file").click();
+  $("file").onchange = async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    password = "";
+    await setDoc(new Uint8Array(await f.arrayBuffer()), `opened ${f.name}`);
+  };
+
+  $("create").click();
+</script>

@@ -1,0 +1,119 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Regex that cannot hang · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>Regular expressions that cannot be made to hang</h1>
+    <p>
+      JavaScript's regex engine backtracks, so some patterns take exponential
+      time on inputs an attacker can choose. Go's is RE2 and runs in time linear
+      in the input, whatever the pattern. Both run below, in this tab, on the
+      same input.
+    </p>
+  </header>
+
+  <div class="panel">
+    <h2>Pattern and input</h2>
+    <div class="row">
+      <div>
+        <label for="pattern">Pattern</label>
+        <input id="pattern" value="(a+)+$" spellcheck="false" />
+      </div>
+      <div style="flex:0 0 9rem">
+        <label for="repeat">Input: <code>a</code> ×</label>
+        <input id="repeat" type="number" value="24" min="1" max="40" />
+      </div>
+      <button id="run">Race them</button>
+    </div>
+    <p class="status" id="status"></p>
+    <p class="muted" style="font-size:.82rem">
+      Start low and increase. Each extra <code>a</code> roughly doubles the work
+      V8 does. Above about 30 the page will freeze for a long time, because a
+      backtracking match cannot be interrupted &mdash; that is the whole problem.
+    </p>
+  </div>
+
+  <div class="grid2">
+    <div class="panel">
+      <h2>JavaScript · V8</h2>
+      <div class="out" id="js">not run yet</div>
+    </div>
+    <div class="panel">
+      <h2>Go · RE2 in WebAssembly</h2>
+      <div class="out" id="go">not run yet</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Try it properly</h2>
+    <div class="row">
+      <div>
+        <label for="p2">Pattern</label>
+        <input id="p2" value="(?P&lt;year&gt;\d{4})-(?P&lt;month&gt;\d{2})" spellcheck="false" />
+      </div>
+      <div>
+        <label for="t2">Text</label>
+        <input id="t2" value="shipped 2026-09 and 2027-01" spellcheck="false" />
+      </div>
+    </div>
+    <label>Matches</label>
+    <div class="out" id="matches">…</div>
+  </div>
+</main>
+
+<script type="module">
+  import { load, show, wire, onInput } from "../shared/demo.js";
+
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/regex/index.browser.js", $("status"));
+
+  // --- the race ---------------------------------------------------------
+  $("run").onclick = wire($("go"), async () => {
+    const pattern = $("pattern").value;
+    const input = "a".repeat(Number($("repeat").value)) + "b";
+
+    $("js").textContent = "running… the page is frozen until this returns";
+    $("go").textContent = "";
+    // Yield so the browser paints that warning before V8 blocks the thread.
+    await new Promise((r) => setTimeout(r, 30));
+
+    let jsMs, jsNote = "";
+    try {
+      const re = new RegExp(pattern);
+      const t0 = performance.now();
+      re.test(input);
+      jsMs = performance.now() - t0;
+    } catch (err) {
+      jsMs = -1;
+      jsNote = `\n\n${err.message}`;
+    }
+    $("js").textContent =
+      jsMs < 0 ? `not a valid JavaScript regex${jsNote}`
+               : `${jsMs.toFixed(1)} ms   (${input.length} characters)`;
+
+    const t = await api.timeMatch(pattern, input);
+    const goMs = t.microseconds / 1000;
+    const ratio = jsMs > 0 && goMs > 0 ? ` — ${Math.round(jsMs / goMs).toLocaleString()}× faster` : "";
+    return `${goMs.toFixed(3)} ms   (${t.inputLength} characters)${ratio}` +
+           (t.note ? `\n\n${t.note}` : "");
+  });
+
+  // --- live matching ----------------------------------------------------
+  const match = wire($("matches"), async () => {
+    const found = await api.findAll($("p2").value, $("t2").value);
+    if (found.length === 0) return "no matches";
+    return found
+      .map((m) => {
+        const groups = m.groups
+          .map((g) => `      ${g.name || `#${g.index}`} = ${JSON.stringify(g.text)}`)
+          .join("\n");
+        return `${JSON.stringify(m.text)} at ${m.start}..${m.end}` + (groups ? `\n${groups}` : "");
+      })
+      .join("\n");
+  });
+  onInput($("p2"), match);
+  onInput($("t2"), match);
+  match();
+</script>

@@ -1,0 +1,177 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>CHIP-8 · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<style>
+  canvas { width: 100%; max-width: 40rem; image-rendering: pixelated;
+    background: #0d0d10; border: 1px solid var(--line); border-radius: 7px; display: block; }
+  .regs { font-family: var(--mono); font-size: 12px; }
+</style>
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>CHIP-8</h1>
+    <p>
+      A virtual machine from 1977, interpreted in Go. The framebuffer crosses
+      the boundary as a <code>[]byte</code> and arrives as a
+      <code>Uint8Array</code>, one byte per pixel, which goes straight into an
+      <code>ImageData</code> with no bit unpacking.
+    </p>
+  </header>
+
+  <div class="panel">
+    <canvas id="screen" width="64" height="32"></canvas>
+    <div class="row" style="margin-top:.7rem">
+      <div style="flex:0 0 auto"><button id="run">Run</button></div>
+      <div style="flex:0 0 auto"><button id="step" class="secondary">Step</button></div>
+      <div style="flex:0 0 auto"><button id="reset" class="secondary">Reset</button></div>
+      <div style="flex:0 0 13rem">
+        <label for="rom">Program</label>
+        <select id="rom">
+          <option value="zero">draw the digit 0</option>
+          <option value="counter">every hex digit</option>
+          <option value="stripes">a column of glyphs</option>
+        </select>
+      </div>
+    </div>
+    <p class="status" id="status"></p>
+  </div>
+
+  <div class="grid2">
+    <div class="panel">
+      <h2>Machine state</h2>
+      <div class="out regs" id="state"></div>
+    </div>
+    <div class="panel">
+      <h2>Disassembly</h2>
+      <div class="out regs" id="asm" style="max-height:18rem"></div>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+  import { load } from "../shared/demo.js";
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/chip8/index.browser.js", $("status"));
+
+  // Hand-assembled programs, so the page needs no ROM files. Each ends by
+  // jumping to itself, which is how a CHIP-8 program halts.
+  const ROMS = {
+    zero: [
+      0x60, 0x00,       // LD V0, 0      x
+      0x61, 0x00,       // LD V1, 0      y
+      0xF0, 0x29,       // LD I, glyph for V0
+      0xD0, 0x15,       // DRW V0, V1, 5
+      0x12, 0x08,       // JP 208        halt
+    ],
+    counter: [
+      0x60, 0x00,       // LD V0, 0      x
+      0x61, 0x00,       // LD V1, 0      y
+      0x62, 0x00,       // LD V2, 0      digit
+      0xF2, 0x29,       // LD I, glyph for V2
+      0xD0, 0x15,       // DRW V0, V1, 5
+      0x70, 0x06,       // ADD V0, 6     move right
+      0x72, 0x01,       // ADD V2, 1     next digit
+      0x32, 0x08,       // SE V2, 8      stop after eight
+      0x12, 0x06,       // JP 206        loop
+      0x12, 0x14,       // JP 214        halt
+    ],
+    stripes: [
+      0x60, 0x00,       // LD V0, 0      x
+      0x61, 0x00,       // LD V1, 0      y
+      0x62, 0x0A,       // LD V2, 10     glyph A
+      0xF2, 0x29,       // LD I, glyph for V2
+      0xD0, 0x15,       // DRW V0, V1, 5
+      0x71, 0x06,       // ADD V1, 6     move down
+      0x31, 0x1E,       // SE V1, 30     stop near the bottom
+      0x12, 0x06,       // JP 206        loop
+      0x12, 0x10,       // JP 210        halt
+    ],
+  };
+
+  const ctx = $("screen").getContext("2d");
+  const image = ctx.createImageData(64, 32);
+  let timer = null;
+
+  async function paint() {
+    const f = await api.display();
+    // One byte per pixel in, four bytes per pixel out.
+    for (let i = 0; i < f.pixels.length; i++) {
+      const on = f.pixels[i] !== 0;
+      image.data[i * 4 + 0] = on ? 0x9e : 0x14;
+      image.data[i * 4 + 1] = on ? 0xd8 : 0x16;
+      image.data[i * 4 + 2] = on ? 0xa0 : 0x1c;
+      image.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(image, 0, 0);
+  }
+
+  function showState(s) {
+    const regs = s.v
+      .map((v, i) => `V${i.toString(16).toUpperCase()} ${v.toString(16).padStart(2, "0")}`)
+      .reduce((rows, cell, i) => {
+        if (i % 4 === 0) rows.push([]);
+        rows[rows.length - 1].push(cell);
+        return rows;
+      }, [])
+      .map((r) => r.join("  "))
+      .join("\n");
+
+    $("state").textContent =
+      `pc      0x${s.pc.toString(16).padStart(3, "0")}\n` +
+      `i       0x${s.i.toString(16).padStart(3, "0")}\n` +
+      `cycles  ${s.cycles}\n` +
+      `halted  ${s.halted}\n` +
+      `stack   [${s.stack.join(", ")}]\n\n${regs}`;
+  }
+
+  function stop() {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+      $("run").textContent = "Run";
+    }
+  }
+
+  async function loadRom() {
+    stop();
+    const rom = new Uint8Array(ROMS[$("rom").value]);
+    showState(await api.load(rom, 1));
+    await paint();
+
+    const asm = await api.disassemble(rom);
+    $("asm").textContent = asm
+      .map((i) => `${i.address.toString(16)}  ${i.opcode}  ${i.mnemonic.padEnd(15)} ${i.description}`)
+      .join("\n");
+    $("status").textContent = `loaded ${rom.length} bytes`;
+  }
+
+  $("run").onclick = () => {
+    if (timer) return stop();
+    $("run").textContent = "Stop";
+    timer = setInterval(async () => {
+      try {
+        const s = await api.run(30);
+        showState(s);
+        await paint();
+        if (s.halted) {
+          stop();
+          $("status").textContent = `halted after ${s.cycles} cycles`;
+        }
+      } catch (err) {
+        stop();
+        $("status").innerHTML = `<span class="err">${err.message}</span>`;
+      }
+    }, 1000 / 30);
+  };
+
+  $("step").onclick = async () => {
+    stop();
+    showState(await api.step());
+    await paint();
+  };
+  $("reset").onclick = loadRom;
+  $("rom").onchange = loadRom;
+
+  await loadRom();
+</script>

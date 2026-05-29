@@ -1,0 +1,94 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Exact money · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>Money that adds up</h1>
+    <p>
+      JavaScript has one numeric type, and it is wrong for money in two ways:
+      <code>0.1 + 0.2</code> is not <code>0.3</code>, and integers above
+      2<sup>53</sup> silently change. Both are computed live below, next to the
+      Go answer.
+    </p>
+  </header>
+
+  <div class="panel">
+    <h2>The two failures</h2>
+    <table>
+      <tr><th>Expression</th><th>JavaScript</th><th>Go, exact</th></tr>
+      <tr><td><code>0.10 + 0.20</code></td><td class="num" id="js1"></td><td class="num ok" id="go1"></td></tr>
+      <tr><td><code>0.1 + 0.2 === 0.3</code></td><td class="num" id="js2"></td><td class="num ok" id="go2"></td></tr>
+      <tr><td><code>9007199254740993</code></td><td class="num" id="js3"></td><td class="num ok" id="go3"></td></tr>
+      <tr><td>1.10 × 3 (a common tax bug)</td><td class="num" id="js4"></td><td class="num ok" id="go4"></td></tr>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Calculator</h2>
+    <div class="row">
+      <div><label for="a">Amount</label><input id="a" value="19.99" /></div>
+      <div style="flex:0 0 8rem"><label for="cur">Currency</label>
+        <select id="cur">
+          <option>USD</option><option>EUR</option><option>GBP</option>
+          <option>JPY</option><option>KES</option><option>UGX</option>
+        </select>
+      </div>
+      <div><label for="b">Plus</label><input id="b" value="0.01" /></div>
+      <div style="flex:0 0 8rem"><label for="rate">× rate</label><input id="rate" value="0.0825" /></div>
+      <div style="flex:0 0 7rem"><label for="split">Split by</label><input id="split" type="number" value="3" min="1" max="20" /></div>
+    </div>
+    <label>Result</label>
+    <div class="out" id="calc">…</div>
+    <p class="muted" style="font-size:.82rem">
+      Try JPY or UGX: they have no minor unit, so a hardcoded division by a
+      hundred would be wrong. Try splitting 10.00 three ways: the odd cent goes
+      somewhere rather than nowhere.
+    </p>
+  </div>
+</main>
+
+<script type="module">
+  import { load, wire, onInput, show } from "../shared/demo.js";
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/money/index.browser.js", null);
+
+  // The JavaScript column, computed here so it is genuinely this engine.
+  $("js1").textContent = String(0.10 + 0.20);
+  $("js2").textContent = String(0.1 + 0.2 === 0.3);
+  $("js3").textContent = String(9007199254740993);
+  $("js4").textContent = String(1.10 * 3);
+
+  const usd = (s) => api.parse(s, "USD");
+  $("go1").textContent = (await api.add(await usd("0.10"), await usd("0.20"))).display;
+  const sum = await api.add(await usd("0.10"), await usd("0.20"));
+  $("go2").textContent = String(sum.minor === "30");
+  $("go3").textContent = (await api.parse("90071992547409.93", "USD")).minor;
+  $("go4").textContent = (await api.applyRate(await usd("1.10"), "3")).display;
+
+  const calc = wire($("calc"), async () => {
+    const cur = $("cur").value;
+    const a = await api.parse($("a").value, cur);
+    const b = await api.parse($("b").value, cur);
+    const total = await api.add(a, b);
+    const taxed = await api.applyRate(total, $("rate").value);
+    const grand = await api.add(total, taxed);
+    const div = await api.split(grand, Number($("split").value));
+
+    return [
+      `subtotal   ${total.display}`,
+      `tax        ${taxed.display}   (rate ${$("rate").value})`,
+      `total      ${grand.display}`,
+      ``,
+      `split ${$("split").value} ways:`,
+      ...div.shares.map((s, i) => `  share ${i + 1}    ${s.display}`),
+      ``,
+      `minor units ${grand.minor}  (a string, so nothing rounds)`,
+    ].join("\n");
+  });
+
+  ["a", "b", "rate", "split"].forEach((id) => onInput($(id), calc));
+  $("cur").onchange = calc;
+  calc();
+</script>

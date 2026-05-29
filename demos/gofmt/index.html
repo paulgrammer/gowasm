@@ -1,0 +1,92 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>gofmt in the browser · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>Go's own parser, in the browser</h1>
+    <p>
+      <code>go/parser</code>, <code>go/format</code> and <code>go/scanner</code>
+      compiled to WebAssembly. The Playground needs a server round trip to do
+      this; nothing here leaves the page. Errors come back as positions, which
+      is what an editor needs to place a squiggle.
+    </p>
+  </header>
+
+  <div class="panel">
+    <h2>Go source</h2>
+    <textarea id="src" rows="14" spellcheck="false">package main
+
+import "fmt"
+
+// Greet returns a greeting for name.
+func  Greet( name string )string{
+if name==""{name="world"}
+return fmt.Sprintf("hello, %s",name)
+}
+
+type User struct{ID int;Name string}
+
+func main(){fmt.Println(Greet("gowasm"))}</textarea>
+    <div class="row" style="margin-top:.6rem">
+      <button id="fmt">Format</button>
+      <button id="break" class="secondary">Break it</button>
+    </div>
+    <p class="status" id="status"></p>
+  </div>
+
+  <div class="grid2">
+    <div class="panel">
+      <h2>Formatted</h2>
+      <div class="out" id="out"></div>
+    </div>
+    <div class="panel">
+      <h2>Outline</h2>
+      <div class="out" id="outline"></div>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+  import { load, onInput } from "../shared/demo.js";
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/gofmt/index.browser.js", $("status"));
+
+  async function update() {
+    const src = $("src").value;
+    const errs = await api.check(src);
+    if (errs.length) {
+      $("out").className = "out err";
+      $("out").textContent = errs
+        .map((e) => `${e.position.line}:${e.position.column}  ${e.message}`)
+        .join("\n");
+      $("outline").textContent = "";
+      $("status").textContent = `${errs.length} syntax error${errs.length > 1 ? "s" : ""}`;
+      return;
+    }
+
+    $("out").className = "out";
+    $("out").textContent = await api.format(src);
+
+    const f = await api.outline(src);
+    const toks = await api.tokenize(src);
+    $("outline").textContent = [
+      `package  ${f.package}`,
+      `imports  ${f.imports.join(", ") || "none"}`,
+      `lines    ${f.lines}   tokens ${toks.length}`,
+      ``,
+      ...f.decls.map((d) =>
+        `${d.kind.padEnd(6)} ${d.name}${d.exported ? "  ·exported" : ""}` +
+        (d.signature ? `\n       ${d.signature}` : "") +
+        (d.doc ? `\n       // ${d.doc}` : ""),
+      ),
+    ].join("\n");
+    $("status").textContent = "parses cleanly";
+  }
+
+  $("fmt").onclick = async () => { $("src").value = await api.format($("src").value).catch(() => $("src").value); update(); };
+  $("break").onclick = () => { $("src").value = "package main\n\nfunc main( {\n}\n"; update(); };
+  onInput($("src"), update, 250);
+  update();
+</script>

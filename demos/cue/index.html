@@ -1,0 +1,102 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>CUE validation · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>CUE, which does not otherwise run here</h1>
+    <p>
+      There is no JavaScript implementation of CUE. Not a weaker one — none.
+      Types and values are the same thing, so validating is unification: the
+      schema carries its own defaults, and checking a config also completes it.
+    </p>
+  </header>
+
+  <div class="grid2">
+    <div class="panel">
+      <h2>Schema</h2>
+      <textarea id="schema" rows="10" spellcheck="false">name!:    string & =~"^[a-z][a-z0-9-]*$"
+port:     int & >=1024 & <=65535
+logLevel: "debug" | "info" | "warn" | "error"
+replicas: int & >=1 | *1</textarea>
+    </div>
+    <div class="panel">
+      <h2>Config (JSON)</h2>
+      <textarea id="input" rows="10" spellcheck="false">{
+  "name": "api",
+  "port": 8080,
+  "logLevel": "info"
+}</textarea>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Result</h2>
+    <div class="out" id="out">…</div>
+    <p class="muted" style="font-size:.82rem">
+      Note that <code>replicas</code> appears in the output without being in the
+      input: the default came from the schema. Try <code>"port": 80</code>, or
+      <code>"logLevel": "verbose"</code>, or removing <code>name</code>.
+    </p>
+  </div>
+
+  <div class="panel">
+    <h2>Composing configurations</h2>
+    <p class="muted" style="font-size:.85rem">
+      Unification, not merging. Order does not matter, and a genuine
+      disagreement is an error rather than one side quietly winning.
+    </p>
+    <div class="grid2">
+      <div>
+        <label for="base">Base</label>
+        <textarea id="base" rows="4" spellcheck="false">{replicas: int | *1, region: "eu", tier: "std"}</textarea>
+      </div>
+      <div>
+        <label for="over">Override</label>
+        <textarea id="over" rows="4" spellcheck="false">{replicas: 5}</textarea>
+      </div>
+    </div>
+    <label>Unified</label>
+    <div class="out" id="unified">…</div>
+  </div>
+</main>
+
+<script type="module">
+  import { load, onInput } from "../shared/demo.js";
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/cue/index.browser.js", null);
+
+  async function validate() {
+    try {
+      const r = await api.validate($("schema").value, $("input").value);
+      if (r.valid) {
+        $("out").className = "out ok";
+        $("out").textContent = "valid\n\nresolved, with defaults applied:\n" +
+          JSON.stringify(JSON.parse(r.concrete), null, 2);
+      } else {
+        $("out").className = "out err";
+        $("out").textContent = "invalid\n\n" +
+          r.violations.map((v) => `${(v.path || "(root)").padEnd(10)} ${v.message}`).join("\n");
+      }
+    } catch (err) {
+      $("out").className = "out err";
+      $("out").textContent = err.message;
+    }
+  }
+
+  async function unify() {
+    try {
+      $("unified").className = "out ok";
+      $("unified").textContent = await api.unify([$("base").value, $("over").value]);
+    } catch (err) {
+      $("unified").className = "out err";
+      $("unified").textContent = err.message;
+    }
+  }
+
+  [["schema", validate], ["input", validate], ["base", unify], ["over", unify]]
+    .forEach(([id, fn]) => onInput($(id), fn, 250));
+  validate();
+  unify();
+</script>

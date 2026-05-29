@@ -1,0 +1,147 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Chess · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<style>
+  .board { display: grid; grid-template-columns: repeat(8, 1fr);
+    width: min(28rem, 90vw); aspect-ratio: 1; border: 1px solid var(--line);
+    border-radius: 6px; overflow: hidden; user-select: none; }
+  .sq { display: flex; align-items: center; justify-content: center;
+    font-size: min(2.2rem, 7vw); line-height: 1; cursor: pointer; }
+  .sq.light { background: #f0d9b5; }
+  .sq.dark  { background: #b58863; }
+  .sq.from  { box-shadow: inset 0 0 0 3px #1a56db; }
+  .sq.to    { box-shadow: inset 0 0 0 3px rgba(26,86,219,.45); }
+  .sq span  { color: #111; }
+  .layout { display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: flex-start; }
+  .side { flex: 1 1 16rem; min-width: 15rem; }
+  .moves { max-height: 14rem; overflow: auto; font-family: var(--mono);
+    font-size: 12px; line-height: 1.7; }
+  .moves button { background: transparent; color: var(--fg); border: 1px solid var(--line);
+    padding: .1rem .4rem; margin: 0 .2rem .2rem 0; font-size: 12px; }
+  .moves button:hover { border-color: var(--accent); }
+</style>
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>Chess</h1>
+    <p>
+      Every rule is enforced in Go: castling rights, en passant, pinned pieces,
+      promotion, the fifty move rule, and the difference between checkmate and
+      stalemate. Click a legal move, or type one. The board never decides
+      anything; it only draws what Go says the position is.
+    </p>
+  </header>
+
+  <div class="layout">
+    <div>
+      <div class="board" id="board"></div>
+      <p class="status" id="status"></p>
+    </div>
+
+    <div class="side">
+      <div class="panel">
+        <h2>Position</h2>
+        <div id="state" class="out" style="max-height:8rem">…</div>
+        <div class="row" style="margin-top:.7rem">
+          <input id="san" placeholder="e4" spellcheck="false" style="flex:1 1 6rem" />
+          <button id="play">Play</button>
+          <button id="reset" class="secondary">Reset</button>
+        </div>
+        <div class="row" style="margin-top:.4rem">
+          <button id="mate" class="secondary">Scholar's mate</button>
+          <button id="stale" class="secondary">Stalemate</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Legal moves <span class="badge" id="count"></span></h2>
+        <div class="moves" id="legal"></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+  import { load, show } from "../shared/demo.js";
+
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/chess/index.browser.js", $("status"));
+  const client = await api.createClient();
+
+  let position;
+  let played = [];
+  let lastMove = null;
+
+  function draw() {
+    const board = $("board");
+    board.innerHTML = "";
+    position.board.forEach((row, r) => {
+      [...row].forEach((piece, f) => {
+        const sq = document.createElement("div");
+        const name = "abcdefgh"[f] + (8 - r);
+        sq.className = `sq ${(r + f) % 2 ? "dark" : "light"}`;
+        if (lastMove?.from === name) sq.classList.add("from");
+        if (lastMove?.to === name) sq.classList.add("to");
+        sq.innerHTML = piece.trim() ? `<span>${piece}</span>` : "";
+        sq.title = name;
+        board.appendChild(sq);
+      });
+    });
+
+    $("state").textContent =
+      `turn      ${position.turn}\n` +
+      `outcome   ${position.outcome}${position.method ? ` (${position.method})` : ""}\n` +
+      `check     ${position.check}\n` +
+      `moves     ${position.moves}\n` +
+      `fen       ${position.fen}`;
+
+    $("count").textContent = position.legal.length;
+    const legal = $("legal");
+    legal.innerHTML = "";
+    if (position.legal.length === 0) {
+      legal.innerHTML = `<span class="muted">none — the game is over</span>`;
+    }
+    for (const m of position.legal) {
+      const b = document.createElement("button");
+      b.textContent = m.san;
+      b.title = `${m.from} → ${m.to}`;
+      b.onclick = () => apply(m.san);
+      legal.appendChild(b);
+    }
+  }
+
+  async function apply(san) {
+    try {
+      const next = await client.play("", [...played, san]);
+      played.push(san);
+      lastMove = position.legal.find((m) => m.san === san) ?? null;
+      position = next;
+      $("status").textContent = `played ${played.join(" ")}`;
+      draw();
+    } catch (err) {
+      $("status").innerHTML = `<span class="err">${err.message}</span>`;
+    }
+  }
+
+  async function setMoves(moves) {
+    played = [];
+    lastMove = null;
+    position = await client["new"]();
+    for (const m of moves) await apply(m);
+    if (moves.length === 0) { $("status").textContent = "ready"; draw(); }
+  }
+
+  $("play").onclick = () => { const v = $("san").value.trim(); if (v) { apply(v); $("san").value = ""; } };
+  $("san").addEventListener("keydown", (e) => { if (e.key === "Enter") $("play").click(); });
+  $("reset").onclick = () => setMoves([]);
+  $("mate").onclick = () => setMoves(["e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6", "Qxf7#"]);
+  $("stale").onclick = async () => {
+    played = []; lastMove = null;
+    position = await client.load("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1");
+    $("status").textContent = "black to move, no legal moves, and not in check: a draw";
+    draw();
+  };
+
+  await setMoves([]);
+</script>

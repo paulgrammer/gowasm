@@ -14,3 +14,6 @@ dist/
 
 # Release artifacts
 /dist/
+
+# Demo packages, built by `make demo`
+demos/_pkg/

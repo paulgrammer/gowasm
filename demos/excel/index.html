@@ -1,0 +1,116 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Spreadsheets · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>Real spreadsheets, built here</h1>
+    <p>
+      Office Open XML, with typed numeric cells, column formats, a frozen header
+      and formulas Excel recalculates rather than frozen values. Built and read
+      back entirely in this tab. Drop an <code>.xlsx</code> to read one you
+      already have.
+    </p>
+  </header>
+
+  <div class="panel">
+    <h2>Rows</h2>
+    <textarea id="rows" rows="6" spellcheck="false">Widget,3,19.99
+Gasket,10,2.50
+Flange,2,45.00
+Bracket,7,8.25</textarea>
+    <p class="muted" style="font-size:.82rem;margin-top:.4rem">
+      Comma separated: item, quantity, price. Numbers are written as numbers, so
+      the total formula below actually computes.
+    </p>
+    <div class="row" style="margin-top:.6rem">
+      <div style="flex:0 0 auto"><button id="build">Build the workbook</button></div>
+      <div style="flex:0 0 auto"><button id="dl" class="secondary" disabled>Download .xlsx</button></div>
+      <div style="flex:0 0 auto"><button id="pick" class="secondary">Read an .xlsx</button>
+        <input type="file" id="file" accept=".xlsx" hidden /></div>
+    </div>
+    <p class="status" id="status"></p>
+  </div>
+
+  <div class="panel">
+    <h2>Read back</h2>
+    <div id="sheet"></div>
+    <div class="out" id="formulas" style="margin-top:.8rem"></div>
+  </div>
+</main>
+
+<script type="module">
+  import { load, download } from "../shared/demo.js";
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/excel/index.browser.js", $("status"));
+
+  let workbook = null;
+
+  async function build() {
+    try {
+      const rows = $("rows").value.trim().split("\n")
+        .map((l) => l.split(",").map((c) => c.trim()))
+        .filter((r) => r.length && r[0]);
+      const total = rows.length + 1;
+
+      workbook = await api.write([{
+        name: "Invoice",
+        freeze: true,
+        columns: [
+          { header: "Item", width: 24, format: "" },
+          { header: "Qty", width: 8, format: "" },
+          { header: "Price", width: 12, format: "#,##0.00" },
+        ],
+        rows,
+        formulas: [
+          { ref: `B${total + 1}`, formula: `SUM(B2:B${total})`, value: "" },
+          { ref: `C${total + 1}`, formula: `SUMPRODUCT(B2:B${total},C2:C${total})`, value: "" },
+        ],
+      }]);
+      $("dl").disabled = false;
+      $("status").textContent = `built ${workbook.length.toLocaleString()} bytes`;
+      await read(workbook);
+    } catch (err) {
+      $("status").innerHTML = `<span class="err">${err.message}</span>`;
+    }
+  }
+
+  async function read(bytes) {
+    try {
+      const wb = await api.read(bytes);
+      const s = wb.sheets[0];
+      $("sheet").innerHTML =
+        `<table><tbody>${s.rows.map((r, i) =>
+          `<tr>${r.map((c) => `<${i ? "td" : "th"}>${c || ""}</${i ? "td" : "th"}>`).join("")}</tr>`
+        ).join("")}</tbody></table>`;
+
+      const withFormulas = s.cells.filter((c) => c.formula);
+      $("formulas").textContent = withFormulas.length
+        ? `sheets: ${wb.sheetNames.join(", ")}\n\nformulas preserved:\n` +
+          withFormulas.map((c) => `  ${c.ref} = ${c.formula}`).join("\n") +
+          `\n\n(no cached value: Excel computes them on open)`
+        : `sheets: ${wb.sheetNames.join(", ")}\n\nno formulas`;
+    } catch (err) {
+      $("formulas").className = "out err";
+      $("formulas").textContent = err.message;
+    }
+  }
+
+  $("build").onclick = build;
+  $("dl").onclick = () =>
+    download(workbook, "invoice.xlsx",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  $("pick").onclick = () => $("file").click();
+  $("file").onchange = async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    $("status").textContent = `read ${f.name}, ${bytes.length.toLocaleString()} bytes`;
+    workbook = bytes;
+    $("dl").disabled = false;
+    await read(bytes);
+  };
+
+  await build();
+</script>

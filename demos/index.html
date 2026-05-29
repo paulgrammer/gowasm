@@ -1,0 +1,104 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>gowasm demos</title>
+<link rel="stylesheet" href="shared/style.css" />
+<main>
+  <header>
+    <h1>gowasm demos</h1>
+    <p>
+      Each page below is Go, compiled to WebAssembly, running in this tab with
+      no server involved. They exist because a passing test suite does not
+      show you anything: these do. The first few are the point of the tool —
+      each is something JavaScript either does worse or cannot do at all.
+    </p>
+  </header>
+
+  <div class="panel">
+    <h2>Things JavaScript cannot do</h2>
+    <div class="cards">
+      <a class="card" href="regex/">
+        <h3>Regex that cannot hang</h3>
+        <p>Race V8's backtracking engine against Go's RE2 on the same evil input.</p>
+      </a>
+      <a class="card" href="cue/">
+        <h3>CUE validation</h3>
+        <p>A configuration language with no JavaScript implementation at all.</p>
+      </a>
+      <a class="card" href="money/">
+        <h3>Exact money</h3>
+        <p>0.1 + 0.2, and integers past 2<sup>53</sup>, without losing anything.</p>
+      </a>
+      <a class="card" href="text/">
+        <h3>Unicode</h3>
+        <p>Count and truncate by grapheme; transliterate; slugs that survive CJK.</p>
+      </a>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Things that normally need a server</h2>
+    <div class="cards">
+      <a class="card" href="pdf/">
+        <h3>PDF toolkit</h3>
+        <p>Create, merge, watermark and encrypt. Nothing is uploaded anywhere.</p>
+      </a>
+      <a class="card" href="excel/">
+        <h3>Spreadsheets</h3>
+        <p>Build a real .xlsx with formulas, and read one back.</p>
+      </a>
+      <a class="card" href="git/">
+        <h3>Git</h3>
+        <p>A real repository in memory: commits, branches, diffs, patches.</p>
+      </a>
+      <a class="card" href="sanitize/">
+        <h3>HTML sanitizing</h3>
+        <p>Allowlist cleaning with no DOM and no jsdom.</p>
+      </a>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Developer tools</h2>
+    <div class="cards">
+      <a class="card" href="gofmt/">
+        <h3>gofmt</h3>
+        <p>Go's own parser and formatter, with no Playground round trip.</p>
+      </a>
+      <a class="card" href="highlight/">
+        <h3>Syntax highlighting</h3>
+        <p>297 languages compiled in, with no per-language grammar fetch.</p>
+      </a>
+      <a class="card" href="expr/">
+        <h3>Expression rules</h3>
+        <p>Evaluate user-written rules without going near <code>eval</code>.</p>
+      </a>
+      <a class="card" href="urls/">
+        <h3>URL extraction</h3>
+        <p>The smallest example, and the one the README opens with.</p>
+      </a>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Because they are fun</h2>
+    <div class="cards">
+      <a class="card" href="chess/">
+        <h3>Chess</h3>
+        <p>Full legality, in Go. The board only draws what Go says is true.</p>
+      </a>
+      <a class="card" href="chip8/">
+        <h3>CHIP-8</h3>
+        <p>An emulator whose framebuffer arrives as a Uint8Array.</p>
+      </a>
+      <a class="card" href="blob/">
+        <h3>Binary</h3>
+        <p>Gzip and hash a file you drop in, without it leaving the page.</p>
+      </a>
+    </div>
+  </div>
+
+  <p class="muted" style="font-size:.85rem">
+    Built with <code>make demo</code>. Source at
+    <a href="https://github.com/paulgrammer/gowasm">github.com/paulgrammer/gowasm</a>.
+  </p>
+</main>

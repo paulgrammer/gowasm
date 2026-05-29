@@ -246,9 +246,33 @@ lint: ## Vet and check formatting
 .PHONY: verify
 verify: lint test test-runtime examples ## Everything CI should run
 
+# Examples with a browser target get a demo page under demos/.
+DEMOS := regex chess chip8 text money gofmt highlight sanitize expr cue excel git pdf blob urls
+
+.PHONY: demo
+demo: build ## Build every demo package and serve the pages
+	@rm -rf demos/_pkg && mkdir -p demos/_pkg
+	@for ex in $(DEMOS); do \
+	  printf "  %-10s " "$$ex"; \
+	  ( cd examples/$$ex && ../../$(BIN) build >/dev/null 2>&1 ) || { echo "FAILED"; exit 1; }; \
+	  cp -R examples/$$ex/node/dist demos/_pkg/$$ex; \
+	  echo "$$(du -h demos/_pkg/$$ex/main.wasm | cut -f1)"; \
+	done
+	@echo
+	@node demos/serve.mjs
+
+.PHONY: demo-build
+demo-build: build ## Build the demo packages without serving
+	@rm -rf demos/_pkg && mkdir -p demos/_pkg
+	@for ex in $(DEMOS); do \
+	  ( cd examples/$$ex && ../../$(BIN) build >/dev/null 2>&1 ) || exit 1; \
+	  cp -R examples/$$ex/node/dist demos/_pkg/$$ex; \
+	done
+	@echo "demo packages in demos/_pkg/"
+
 .PHONY: clean
 clean: ## Remove build output and generated packages
-	rm -rf bin $(DIST)
+	rm -rf bin $(DIST) demos/_pkg
 	@find npm -name '*.tgz' -delete 2>/dev/null || true
 	@for ex in $(EXAMPLES); do rm -rf examples/$$ex/node; done
 

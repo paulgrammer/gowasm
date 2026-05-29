@@ -1,0 +1,93 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Unicode · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>Unicode, counted properly</h1>
+    <p>
+      A JavaScript string is a sequence of UTF-16 code units, so
+      <code>"🇰🇪".length</code> is 4 and slicing a string can cut a flag in half.
+      Everything below is computed on whatever you type, in both engines.
+    </p>
+  </header>
+
+  <div class="panel">
+    <h2>Input</h2>
+    <input id="s" value="hi 🇰🇪 Ćao 東京 👩‍👩‍👧 café" spellcheck="false" />
+    <p class="muted" style="font-size:.82rem;margin-top:.5rem">
+      Flags, family emoji with joiners, combining accents and CJK are all here
+      on purpose: each breaks a different naive assumption.
+    </p>
+  </div>
+
+  <div class="grid2">
+    <div class="panel">
+      <h2>How long is it?</h2>
+      <table>
+        <tr><th>Measure</th><th>Count</th></tr>
+        <tr><td>JavaScript <code>.length</code></td><td class="num" id="jslen"></td></tr>
+        <tr><td>UTF-8 bytes</td><td class="num" id="bytes"></td></tr>
+        <tr><td>Code points</td><td class="num" id="runes"></td></tr>
+        <tr><td><strong>Graphemes</strong> — what a reader sees</td><td class="num ok" id="graphemes"></td></tr>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h2>Truncating to 6</h2>
+      <label>JavaScript <code>.slice(0, 6)</code></label>
+      <div class="out" id="jscut"></div>
+      <label>Go, by grapheme</label>
+      <div class="out ok" id="gocut"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Transforms</h2>
+    <table>
+      <tr><th>Operation</th><th>Result</th></tr>
+      <tr><td>Transliterate to Latin</td><td id="latin"></td></tr>
+      <tr><td>URL slug</td><td><code id="slug"></code></td></tr>
+      <tr><td>Title case (English)</td><td id="titleEn"></td></tr>
+      <tr><td>Title case (Turkish)</td><td id="titleTr"></td></tr>
+      <tr><td>Sorted words</td><td id="sorted"></td></tr>
+    </table>
+    <p class="muted" style="font-size:.82rem">
+      Turkish is the one worth noticing: the capital of <code>i</code> is
+      <code>İ</code>, so a locale-blind <code>toUpperCase</code> is wrong in
+      both directions.
+    </p>
+  </div>
+</main>
+
+<script type="module">
+  import { load, onInput } from "../shared/demo.js";
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/text/index.browser.js", null);
+
+  async function update() {
+    const s = $("s").value;
+    try {
+      const c = await api.count(s);
+      $("jslen").textContent = s.length;
+      $("bytes").textContent = c.bytes;
+      $("runes").textContent = c.runes;
+      $("graphemes").textContent = c.graphemes;
+
+      $("jscut").textContent = JSON.stringify(s.slice(0, 6));
+      $("gocut").textContent = JSON.stringify(await api.truncate(s, 6));
+
+      $("latin").textContent = await api.latin(s);
+      $("slug").textContent = (await api.slug(s)) || "(empty)";
+      $("titleEn").textContent = await api.title(s, "en");
+      $("titleTr").textContent = await api.title(s, "tr");
+      const words = s.split(/\s+/).filter(Boolean);
+      $("sorted").textContent = (await api.sort(words, "en")).join(" · ");
+    } catch (err) {
+      $("latin").textContent = err.message;
+    }
+  }
+  onInput($("s"), update);
+  update();
+</script>

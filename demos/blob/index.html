@@ -1,0 +1,101 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Binary data · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<style>
+  .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 2rem 1rem;
+    text-align: center; color: var(--muted); cursor: pointer; }
+  .drop.over { border-color: var(--accent); color: var(--fg); }
+</style>
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>Binary data, without an upload</h1>
+    <p>
+      Go <code>[]byte</code> is <code>Uint8Array</code> in TypeScript. On the
+      wire it is base64, because that is what <code>encoding/json</code> does,
+      but the generated client converts at the boundary, including for binary
+      nested inside structs and slices. Drop a file: it is hashed and gzipped
+      here, and never sent anywhere.
+    </p>
+  </header>
+
+  <div class="panel">
+    <div class="drop" id="drop">
+      Drop a file here, or click to choose one
+      <input type="file" id="file" hidden />
+    </div>
+    <p class="status" id="status"></p>
+  </div>
+
+  <div class="panel">
+    <h2>Results</h2>
+    <div class="out" id="out">waiting for a file…</div>
+    <div class="row" style="margin-top:.7rem">
+      <div style="flex:0 0 auto"><button id="dl" disabled>Download the gzipped file</button></div>
+      <div style="flex:0 0 auto"><button id="roundtrip" class="secondary" disabled>Verify the round trip</button></div>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+  import { load, download } from "../shared/demo.js";
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/blob/index.browser.js", $("status"));
+
+  let original = null, packed = null, name = "file";
+
+  async function handle(file) {
+    try {
+      name = file.name;
+      original = new Uint8Array(await file.arrayBuffer());
+      $("status").textContent = `read ${file.name}`;
+
+      const sum = await api.digest(original);
+      packed = await api.compress(original);
+      const size = Math.max(1, Math.ceil(original.length / 4));
+      const chunks = await api.split(original, size);
+      const hex = [...sum.sum].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+      $("out").className = "out";
+      $("out").textContent = [
+        `file        ${file.name}`,
+        `size        ${original.length.toLocaleString()} bytes`,
+        ``,
+        `${sum.algo}      ${hex}`,
+        `            sum is a []byte nested in a struct, converted in place`,
+        ``,
+        `gzipped     ${packed.length.toLocaleString()} bytes ` +
+          `(${((1 - packed.length / Math.max(original.length, 1)) * 100).toFixed(1)}% smaller)`,
+        `chunks      ${chunks.length} x Uint8Array [${chunks.map((c) => c.length).join(", ")}]`,
+        `            a [][]byte result, so Uint8Array[]`,
+      ].join("\n");
+
+      $("dl").disabled = false;
+      $("roundtrip").disabled = false;
+    } catch (err) {
+      $("out").className = "out err";
+      $("out").textContent = err.message;
+    }
+  }
+
+  $("dl").onclick = () => download(packed, name + ".gz", "application/gzip");
+  $("roundtrip").onclick = async () => {
+    const back = await api.decompress(packed);
+    const same = back.length === original.length && back.every((b, i) => b === original[i]);
+    $("status").innerHTML = same
+      ? `<span class="ok">round trip exact: ${back.length.toLocaleString()} bytes back</span>`
+      : `<span class="err">round trip differs</span>`;
+  };
+
+  const drop = $("drop");
+  drop.onclick = () => $("file").click();
+  $("file").onchange = (e) => e.target.files[0] && handle(e.target.files[0]);
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+  drop.ondragleave = () => drop.classList.remove("over");
+  drop.ondrop = (e) => {
+    e.preventDefault();
+    drop.classList.remove("over");
+    if (e.dataTransfer.files[0]) handle(e.dataTransfer.files[0]);
+  };
+</script>

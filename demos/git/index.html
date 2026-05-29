@@ -1,0 +1,117 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Git in memory · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>A real git repository, in memory</h1>
+    <p>
+      No filesystem, no subprocess, no server. Real object hashes, real
+      branches, real unified diffs. Useful where a repository is the right data
+      structure and there is nowhere to put one: an editor wanting genuine
+      history, a review tool diffing two trees.
+    </p>
+  </header>
+
+  <div class="panel">
+    <h2>Make a commit</h2>
+    <div class="row">
+      <div><label for="path">Path</label><input id="path" value="README.md" /></div>
+      <div><label for="msg">Message</label><input id="msg" value="update the readme" /></div>
+    </div>
+    <label for="content">Contents</label>
+    <textarea id="content" rows="5" spellcheck="false"># demo
+
+Edited in the browser.</textarea>
+    <div class="row" style="margin-top:.6rem">
+      <div style="flex:0 0 auto"><button id="commit">Commit</button></div>
+      <div style="flex:0 0 auto"><button id="branch" class="secondary">Branch</button></div>
+      <div style="flex:0 0 auto"><button id="reset" class="secondary">Start over</button></div>
+    </div>
+    <p class="status" id="status"></p>
+  </div>
+
+  <div class="grid2">
+    <div class="panel">
+      <h2>History</h2>
+      <div class="out" id="log" style="max-height:16rem"></div>
+      <p class="muted" style="font-size:.82rem;margin-top:.5rem">branches: <span id="branches"></span></p>
+    </div>
+    <div class="panel">
+      <h2>Diff of the last commit</h2>
+      <div class="out" id="diff" style="max-height:16rem"></div>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+  import { load } from "../shared/demo.js";
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/git/index.browser.js", $("status"));
+
+  // Commit times are supplied rather than read from a clock, so the history is
+  // reproducible.
+  let clock = Date.UTC(2026, 0, 1);
+  const nextTime = () => { clock += 86400000; return new Date(clock).toISOString().replace(/\.\d+Z$/, "Z"); };
+
+  async function refresh() {
+    const log = await api.log(20);
+    $("log").textContent = log.length
+      ? log.map((c) =>
+          `${c.short}  ${c.when.slice(0, 10)}  ${c.message}\n` +
+          `         ${c.author} <${c.email}>${c.parents.length ? `  parent ${c.parents[0].slice(0, 7)}` : "  (root)"}`
+        ).join("\n")
+      : "no commits yet";
+
+    $("branches").textContent = (await api.branches()).join(", ") || "none";
+
+    if (log.length >= 2) {
+      const d = await api.compare("HEAD~1", "HEAD");
+      $("diff").textContent =
+        d.changes.map((c) => `${c.kind.padEnd(9)} ${c.path}  +${c.insertions} -${c.deletions}`).join("\n") +
+        "\n\n" + d.patch;
+    } else {
+      $("diff").textContent = "make a second commit to see a diff";
+    }
+  }
+
+  async function start() {
+    await api.init();
+    clock = Date.UTC(2026, 0, 1);
+    await api.record(
+      [{ path: "README.md", content: "# demo\n" }],
+      "first commit", "Ada", "ada@example.com", nextTime(),
+    );
+    $("status").textContent = "initialised with one commit";
+    await refresh();
+  }
+
+  $("commit").onclick = async () => {
+    try {
+      const c = await api.record(
+        [{ path: $("path").value, content: $("content").value }],
+        $("msg").value, "Ada", "ada@example.com", nextTime(),
+      );
+      $("status").textContent = `committed ${c.short}`;
+      await refresh();
+    } catch (err) {
+      $("status").innerHTML = `<span class="err">${err.message}</span>`;
+    }
+  };
+
+  $("branch").onclick = async () => {
+    const name = prompt("Branch name", "feature");
+    if (!name) return;
+    try {
+      const s = await api.branch(name);
+      $("status").textContent = `now on ${s.branch}`;
+      await refresh();
+    } catch (err) {
+      $("status").innerHTML = `<span class="err">${err.message}</span>`;
+    }
+  };
+
+  $("reset").onclick = start;
+  await start();
+</script>

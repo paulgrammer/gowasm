@@ -1,0 +1,112 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Syntax highlighting · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<style>
+  #code { font-family: var(--mono); font-size: 13px; white-space: pre-wrap;
+    padding: 1rem; border-radius: 7px; overflow: auto; max-height: 30rem; }
+</style>
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>Syntax highlighting, no grammar to fetch</h1>
+    <p>
+      <span id="langcount">Hundreds of</span> languages and
+      <span id="stylecount">dozens of</span> themes, all compiled into the
+      module. Switching language costs nothing at runtime, because there is
+      nothing to download. Tokens come back as data, so this page builds the
+      markup itself.
+    </p>
+  </header>
+
+  <div class="panel">
+    <div class="row">
+      <div><label for="lang">Language</label><select id="lang"></select></div>
+      <div><label for="style">Theme</label><select id="style"></select></div>
+      <div style="flex:0 0 auto"><label>&nbsp;</label><button id="detect" class="secondary">Detect from filename</button></div>
+    </div>
+    <label for="src">Source</label>
+    <textarea id="src" rows="10" spellcheck="false">package main
+
+import "fmt"
+
+func main() {
+	// A comment, a string and a number.
+	for i := 0; i < 3; i++ {
+		fmt.Printf("hello %d\n", i)
+	}
+}</textarea>
+  </div>
+
+  <div class="panel">
+    <h2>Highlighted</h2>
+    <div id="code"></div>
+    <p class="status" id="status"></p>
+  </div>
+</main>
+
+<script type="module">
+  import { load, onInput } from "../shared/demo.js";
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/highlight/index.browser.js", $("status"));
+
+  const langs = await api.languages();
+  const styles = await api.styles();
+  $("langcount").textContent = langs.length;
+  $("stylecount").textContent = styles.length;
+
+  for (const l of langs) {
+    const o = document.createElement("option");
+    o.value = l.aliases[0] ?? l.name.toLowerCase();
+    o.textContent = l.name;
+    if (l.name === "Go") o.selected = true;
+    $("lang").appendChild(o);
+  }
+  for (const s of styles) {
+    const o = document.createElement("option");
+    o.value = o.textContent = s;
+    if (s === "monokai") o.selected = true;
+    $("style").appendChild(o);
+  }
+
+  async function render() {
+    try {
+      const r = await api.tokenize($("lang").value, $("style").value, $("src").value);
+      const el = $("code");
+      el.style.background = r.background || "transparent";
+      el.textContent = "";
+      for (const t of r.tokens) {
+        const span = document.createElement("span");
+        span.textContent = t.text;
+        if (t.color) span.style.color = t.color;
+        if (t.bold) span.style.fontWeight = "600";
+        if (t.italic) span.style.fontStyle = "italic";
+        el.appendChild(span);
+      }
+      $("status").textContent = `${r.language} · ${r.style} · ${r.tokens.length} tokens`;
+    } catch (err) {
+      $("status").innerHTML = `<span class="err">${err.message}</span>`;
+    }
+  }
+
+  $("detect").onclick = async () => {
+    const name = prompt("Filename, for example server.rs or main.py", "server.rs");
+    if (!name) return;
+    try {
+      const d = await api.detect(name, $("src").value);
+      $("status").textContent = `${d.language.name}, matched by ${d.by}`;
+      const alias = d.language.aliases[0] ?? d.language.name.toLowerCase();
+      if ([...$("lang").options].some((o) => o.value === alias)) {
+        $("lang").value = alias;
+        render();
+      }
+    } catch (err) {
+      $("status").innerHTML = `<span class="err">${err.message}</span>`;
+    }
+  };
+
+  $("lang").onchange = render;
+  $("style").onchange = render;
+  onInput($("src"), render, 200);
+  render();
+</script>
