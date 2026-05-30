@@ -266,6 +266,12 @@ backtracking engine against Go's RE2 on the same input, in the same tab. At
 24 characters V8 takes seconds and the page freezes, because a backtracking
 match cannot be interrupted. Go returns in well under a millisecond.
 
+The chess board is playable: drag a piece, or tap one square then another.
+Nothing about the rules lives in the page. It only draws the position Go
+reports and only offers the moves Go has already called legal, so an illegal
+drag simply snaps back, and a pawn reaching the last rank asks which piece to
+promote to because Go returned four moves for those two squares.
+
 Everything runs locally. The PDF, spreadsheet and binary demos exist partly to
 make the point that none of it is uploaded anywhere.
 

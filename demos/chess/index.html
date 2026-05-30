@@ -3,33 +3,69 @@
 <title>Chess · gowasm</title>
 <link rel="stylesheet" href="../shared/style.css" />
 <style>
-  .board { display: grid; grid-template-columns: repeat(8, 1fr);
-    width: min(28rem, 90vw); aspect-ratio: 1; border: 1px solid var(--line);
-    border-radius: 6px; overflow: hidden; user-select: none; }
-  .sq { display: flex; align-items: center; justify-content: center;
-    font-size: min(2.2rem, 7vw); line-height: 1; cursor: pointer; }
+  .board {
+    display: grid; grid-template-columns: repeat(8, 1fr);
+    width: min(30rem, 92vw); aspect-ratio: 1;
+    border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
+    user-select: none; touch-action: none; position: relative;
+  }
+  .sq {
+    display: flex; align-items: center; justify-content: center;
+    font-size: min(2.4rem, 7.5vw); line-height: 1; position: relative;
+  }
   .sq.light { background: #f0d9b5; }
   .sq.dark  { background: #b58863; }
-  .sq.from  { box-shadow: inset 0 0 0 3px #1a56db; }
-  .sq.to    { box-shadow: inset 0 0 0 3px rgba(26,86,219,.45); }
-  .sq span  { color: #111; }
+  .sq span  { color: #111; pointer-events: none; }
+
+  /* A piece that can move, on the side to move. */
+  .sq.movable { cursor: grab; }
+  .sq.dragging span { opacity: .25; }
+
+  /* Where the piece being dragged may land. */
+  .sq.target::after {
+    content: ""; position: absolute; width: 30%; aspect-ratio: 1;
+    border-radius: 50%; background: rgba(26, 86, 219, .45); pointer-events: none;
+  }
+  .sq.target.occupied::after {
+    width: 88%; border-radius: 50%; background: transparent;
+    box-shadow: inset 0 0 0 4px rgba(26, 86, 219, .5);
+  }
+  .sq.selected { box-shadow: inset 0 0 0 4px #1a56db; }
+  .sq.hover    { box-shadow: inset 0 0 0 4px rgba(26, 86, 219, .8); }
+  .sq.from     { background-image: linear-gradient(rgba(255, 235, 130, .55), rgba(255, 235, 130, .55)); }
+  .sq.to       { background-image: linear-gradient(rgba(255, 235, 130, .8),  rgba(255, 235, 130, .8)); }
+  .sq.check    { background-image: radial-gradient(circle, rgba(220, 60, 50, .8) 25%, transparent 70%); }
+
+  /* The piece under the cursor while dragging. */
+  #ghost {
+    position: fixed; z-index: 10; pointer-events: none; display: none;
+    font-size: min(2.4rem, 7.5vw); line-height: 1; color: #111;
+    transform: translate(-50%, -50%); filter: drop-shadow(0 3px 5px rgba(0,0,0,.4));
+  }
+
   .layout { display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: flex-start; }
-  .side { flex: 1 1 16rem; min-width: 15rem; }
-  .moves { max-height: 14rem; overflow: auto; font-family: var(--mono);
-    font-size: 12px; line-height: 1.7; }
-  .moves button { background: transparent; color: var(--fg); border: 1px solid var(--line);
-    padding: .1rem .4rem; margin: 0 .2rem .2rem 0; font-size: 12px; }
+  .side { flex: 1 1 17rem; min-width: 16rem; }
+  .moves { max-height: 11rem; overflow: auto; }
+  .moves button {
+    background: transparent; color: var(--fg); border: 1px solid var(--line);
+    padding: .1rem .4rem; margin: 0 .2rem .25rem 0; font-family: var(--mono); font-size: 12px;
+  }
   .moves button:hover { border-color: var(--accent); }
+  .played { font-family: var(--mono); font-size: 12px; line-height: 1.8; }
+
+  #promo { display: none; margin-top: .6rem; }
+  #promo button { font-size: 1.4rem; padding: .2rem .5rem; }
 </style>
 <main>
   <a class="back" href="../">← all demos</a>
   <header>
     <h1>Chess</h1>
     <p>
-      Every rule is enforced in Go: castling rights, en passant, pinned pieces,
-      promotion, the fifty move rule, and the difference between checkmate and
-      stalemate. Click a legal move, or type one. The board never decides
-      anything; it only draws what Go says the position is.
+      Drag a piece to move it, or tap one square then another. Every rule is
+      enforced in Go: castling rights, en passant, pinned pieces, promotion, and
+      the difference between checkmate and stalemate. The board decides nothing
+      &mdash; it only draws what Go says the position is, and only offers moves
+      Go has already called legal.
     </p>
   </header>
 
@@ -37,21 +73,32 @@
     <div>
       <div class="board" id="board"></div>
       <p class="status" id="status"></p>
+      <div id="promo" class="panel">
+        <h2>Promote to</h2>
+        <div id="promoButtons"></div>
+      </div>
     </div>
 
     <div class="side">
       <div class="panel">
         <h2>Position</h2>
-        <div id="state" class="out" style="max-height:8rem">…</div>
+        <div id="state" class="out" style="max-height:9rem"></div>
         <div class="row" style="margin-top:.7rem">
-          <input id="san" placeholder="e4" spellcheck="false" style="flex:1 1 6rem" />
+          <input id="san" placeholder="type a move, e.g. e4" spellcheck="false" style="flex:1 1 8rem" />
           <button id="play">Play</button>
-          <button id="reset" class="secondary">Reset</button>
         </div>
         <div class="row" style="margin-top:.4rem">
+          <button id="reset" class="secondary">Reset</button>
+          <button id="undo" class="secondary">Undo</button>
           <button id="mate" class="secondary">Scholar's mate</button>
           <button id="stale" class="secondary">Stalemate</button>
+          <button id="promoDemo" class="secondary">Promotion</button>
         </div>
+      </div>
+
+      <div class="panel">
+        <h2>Moves played</h2>
+        <div class="played" id="history"><span class="muted">none yet</span></div>
       </div>
 
       <div class="panel">
@@ -61,30 +108,56 @@
     </div>
   </div>
 </main>
+<div id="ghost"></div>
 
 <script type="module">
-  import { load, show } from "../shared/demo.js";
+  import { load } from "../shared/demo.js";
 
   const $ = (id) => document.getElementById(id);
   const api = await load("../_pkg/chess/index.browser.js", $("status"));
   const client = await api.createClient();
 
-  let position;
-  let played = [];
-  let lastMove = null;
+  const FILES = "abcdefgh";
+  const square = (r, f) => FILES[f] + (8 - r);
+
+  let position;          // whatever Go last told us the position is
+  let played = [];        // moves in algebraic notation, for undo and replay
+  let lastMove = null;    // for highlighting
+  let startFEN = "";      // so a loaded position can be replayed from
+  let selected = null;    // square a piece is picked up from
+  let drag = null;        // active pointer drag, if any
+
+  // ---------------------------------------------------------------- drawing
+
+  function movesFrom(name) {
+    return position.legal.filter((m) => m.from === name);
+  }
 
   function draw() {
     const board = $("board");
     board.innerHTML = "";
+
+    const canMoveFrom = new Set(position.legal.map((m) => m.from));
+    const targets = selected ? new Set(movesFrom(selected).map((m) => m.to)) : new Set();
+
     position.board.forEach((row, r) => {
       [...row].forEach((piece, f) => {
+        const name = square(r, f);
         const sq = document.createElement("div");
-        const name = "abcdefgh"[f] + (8 - r);
         sq.className = `sq ${(r + f) % 2 ? "dark" : "light"}`;
+        sq.dataset.square = name;
+
+        const occupied = piece.trim() !== "";
+        if (occupied) sq.innerHTML = `<span>${piece}</span>`;
+
         if (lastMove?.from === name) sq.classList.add("from");
         if (lastMove?.to === name) sq.classList.add("to");
-        sq.innerHTML = piece.trim() ? `<span>${piece}</span>` : "";
-        sq.title = name;
+        if (canMoveFrom.has(name)) sq.classList.add("movable");
+        if (selected === name) sq.classList.add("selected");
+        if (targets.has(name)) {
+          sq.classList.add("target");
+          if (occupied) sq.classList.add("occupied");
+        }
         board.appendChild(sq);
       });
     });
@@ -93,7 +166,7 @@
       `turn      ${position.turn}\n` +
       `outcome   ${position.outcome}${position.method ? ` (${position.method})` : ""}\n` +
       `check     ${position.check}\n` +
-      `moves     ${position.moves}\n` +
+      `halfmove  ${position.halfMoveClock}\n` +
       `fen       ${position.fen}`;
 
     $("count").textContent = position.legal.length;
@@ -109,39 +182,202 @@
       b.onclick = () => apply(m.san);
       legal.appendChild(b);
     }
+
+    $("history").innerHTML = played.length
+      ? played.map((m, i) => (i % 2 === 0 ? `${i / 2 + 1}. ` : "") + m).join(" ")
+      : `<span class="muted">none yet</span>`;
   }
+
+  // ---------------------------------------------------------------- playing
 
   async function apply(san) {
     try {
-      const next = await client.play("", [...played, san]);
+      position = await client.play(startFEN, [...played, san]);
       played.push(san);
-      lastMove = position.legal.find((m) => m.san === san) ?? null;
-      position = next;
-      $("status").textContent = `played ${played.join(" ")}`;
-      draw();
+      $("status").textContent = `played ${san}`;
     } catch (err) {
+      // Go refused it, which is the only opinion that counts.
       $("status").innerHTML = `<span class="err">${err.message}</span>`;
+    }
+    selected = null;
+    hidePromotion();
+    draw();
+  }
+
+  /** Plays from → to, asking which piece to promote to when that is ambiguous. */
+  async function move(from, to) {
+    const candidates = movesFrom(from).filter((m) => m.to === to);
+    if (candidates.length === 0) {
+      selected = null;
+      draw();
+      return;
+    }
+    lastMove = candidates[0];
+    if (candidates.length === 1) {
+      await apply(candidates[0].san);
+      return;
+    }
+    // Several moves share these squares: a pawn reaching the last rank.
+    showPromotion(candidates);
+  }
+
+  function showPromotion(candidates) {
+    const glyphs = { Queen: "♛", Rook: "♜", Bishop: "♝", Knight: "♞", q: "♛", r: "♜", b: "♝", n: "♞" };
+    const box = $("promoButtons");
+    box.innerHTML = "";
+    for (const m of candidates) {
+      const b = document.createElement("button");
+      b.textContent = glyphs[m.promotion] ?? m.promotion;
+      b.title = `${m.san} (${m.promotion})`;
+      b.onclick = () => apply(m.san);
+      box.appendChild(b);
+    }
+    $("promo").style.display = "block";
+    $("status").textContent = "choose a piece to promote to";
+  }
+
+  function hidePromotion() { $("promo").style.display = "none"; }
+
+  // ------------------------------------------------------------- dragging
+
+  const board = $("board");
+  const ghost = $("ghost");
+
+  /** The square under a client coordinate, or null when outside the board. */
+  function squareAt(x, y) {
+    const r = board.getBoundingClientRect();
+    if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
+    const file = Math.floor(((x - r.left) / r.width) * 8);
+    const rank = Math.floor(((y - r.top) / r.height) * 8);
+    if (file < 0 || file > 7 || rank < 0 || rank > 7) return null;
+    return square(rank, file);
+  }
+
+  function highlightHover(name) {
+    for (const el of board.querySelectorAll(".sq.hover")) el.classList.remove("hover");
+    if (!name) return;
+    const el = board.querySelector(`[data-square="${name}"]`);
+    if (el && movesFrom(drag.from).some((m) => m.to === name)) el.classList.add("hover");
+  }
+
+  board.addEventListener("pointerdown", (e) => {
+    const cell = e.target.closest(".sq");
+    if (!cell) return;
+    const name = cell.dataset.square;
+
+    // A second tap on a highlighted destination completes a click-click move.
+    if (selected && movesFrom(selected).some((m) => m.to === name)) {
+      e.preventDefault();
+      move(selected, name);
+      return;
+    }
+    if (movesFrom(name).length === 0) {
+      selected = null;
+      draw();
+      return;
+    }
+
+    e.preventDefault();
+    selected = name;
+    hidePromotion();
+    draw();
+
+    const glyph = board.querySelector(`[data-square="${name}"] span`);
+    if (!glyph) return;
+
+    drag = { from: name, pointerId: e.pointerId, moved: false };
+    ghost.textContent = glyph.textContent;
+    ghost.style.display = "block";
+    ghost.style.left = `${e.clientX}px`;
+    ghost.style.top = `${e.clientY}px`;
+    board.querySelector(`[data-square="${name}"]`)?.classList.add("dragging");
+    capture(e.pointerId, true);
+  });
+
+  board.addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    drag.moved = true;
+    ghost.style.left = `${e.clientX}px`;
+    ghost.style.top = `${e.clientY}px`;
+    highlightHover(squareAt(e.clientX, e.clientY));
+  });
+
+  /**
+   * Takes or releases the pointer, tolerating a browser that refuses.
+   *
+   * Both calls throw NotFoundError if the pointer is not active -- which
+   * happens after a cancel, and for synthetic events -- and an exception here
+   * would abandon the rest of the drag, losing the move.
+   */
+  function capture(pointerId, take) {
+    try {
+      if (take) board.setPointerCapture(pointerId);
+      else if (board.hasPointerCapture?.(pointerId)) board.releasePointerCapture(pointerId);
+    } catch {
+      // Not fatal: without capture the drag still works while the pointer
+      // stays over the board, which is where it needs to end up anyway.
     }
   }
 
-  async function setMoves(moves) {
-    played = [];
-    lastMove = null;
-    position = await client["new"]();
-    for (const m of moves) await apply(m);
-    if (moves.length === 0) { $("status").textContent = "ready"; draw(); }
+  function endDrag(e) {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    const from = drag.from;
+    const wasDragged = drag.moved;
+    drag = null;
+
+    ghost.style.display = "none";
+    capture(e.pointerId, false);
+    for (const el of board.querySelectorAll(".sq.hover, .sq.dragging")) {
+      el.classList.remove("hover", "dragging");
+    }
+
+    const to = squareAt(e.clientX, e.clientY);
+    // A tap without movement leaves the piece selected, so the next tap
+    // completes the move. A drag that landed somewhere tries that square.
+    if (wasDragged && to && to !== from) move(from, to);
+    else if (wasDragged) { selected = null; draw(); }
   }
 
-  $("play").onclick = () => { const v = $("san").value.trim(); if (v) { apply(v); $("san").value = ""; } };
+  board.addEventListener("pointerup", endDrag);
+  board.addEventListener("pointercancel", endDrag);
+
+  // ---------------------------------------------------------------- setup
+
+  async function setPosition(fen, moves) {
+    startFEN = fen;
+    played = [];
+    lastMove = null;
+    selected = null;
+    hidePromotion();
+    position = fen ? await client.load(fen) : await client["new"]();
+    for (const m of moves) await apply(m);
+    if (moves.length === 0) {
+      $("status").textContent = "drag a piece, or tap one square then another";
+      draw();
+    }
+  }
+
+  $("play").onclick = () => {
+    const v = $("san").value.trim();
+    if (v) { apply(v); $("san").value = ""; }
+  };
   $("san").addEventListener("keydown", (e) => { if (e.key === "Enter") $("play").click(); });
-  $("reset").onclick = () => setMoves([]);
-  $("mate").onclick = () => setMoves(["e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6", "Qxf7#"]);
+
+  $("reset").onclick = () => setPosition("", []);
+  $("undo").onclick = () => {
+    if (played.length === 0) return;
+    const moves = played.slice(0, -1);
+    setPosition(startFEN, moves);
+  };
+  $("mate").onclick = () => setPosition("", ["e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6", "Qxf7#"]);
   $("stale").onclick = async () => {
-    played = []; lastMove = null;
-    position = await client.load("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1");
+    await setPosition("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1", []);
     $("status").textContent = "black to move, no legal moves, and not in check: a draw";
-    draw();
+  };
+  $("promoDemo").onclick = async () => {
+    await setPosition("8/P6k/8/8/8/8/6K1/8 w - - 0 1", []);
+    $("status").textContent = "drag the pawn to a8 — Go offers four moves, so you are asked which";
   };
 
-  await setMoves([]);
+  await setPosition("", []);
 </script>
