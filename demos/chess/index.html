@@ -3,14 +3,21 @@
 <title>Chess · gowasm</title>
 <link rel="stylesheet" href="../shared/style.css" />
 <style>
+  /* Rows are declared as well as columns. With only columns, each row sizes
+     to its content, so a rank holding a piece is taller than an empty one and
+     the whole board resizes every time a piece moves. */
   .board {
-    display: grid; grid-template-columns: repeat(8, 1fr);
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);
     width: min(30rem, 92vw); aspect-ratio: 1;
     border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
     user-select: none; touch-action: none; position: relative;
   }
   .sq {
     display: flex; align-items: center; justify-content: center;
+    /* The glyph must not be able to push the cell around. */
+    min-width: 0; min-height: 0; overflow: hidden;
     font-size: min(2.4rem, 7.5vw); line-height: 1; position: relative;
   }
   .sq.light { background: #f0d9b5; }
@@ -133,32 +140,46 @@
     return position.legal.filter((m) => m.from === name);
   }
 
-  function draw() {
+  // The 64 cells are created once and then only updated. Rebuilding them on
+  // every draw made the board flicker and threw away the element the pointer
+  // was interacting with.
+  const cells = new Map();
+
+  function buildBoard() {
     const board = $("board");
     board.innerHTML = "";
+    for (let r = 0; r < 8; r++) {
+      for (let f = 0; f < 8; f++) {
+        const name = square(r, f);
+        const sq = document.createElement("div");
+        sq.className = `sq ${(r + f) % 2 ? "dark" : "light"}`;
+        sq.dataset.square = name;
+        sq.innerHTML = "<span></span>";
+        board.appendChild(sq);
+        cells.set(name, sq);
+      }
+    }
+  }
 
+  function draw() {
     const canMoveFrom = new Set(position.legal.map((m) => m.from));
     const targets = selected ? new Set(movesFrom(selected).map((m) => m.to)) : new Set();
 
     position.board.forEach((row, r) => {
       [...row].forEach((piece, f) => {
         const name = square(r, f);
-        const sq = document.createElement("div");
-        sq.className = `sq ${(r + f) % 2 ? "dark" : "light"}`;
-        sq.dataset.square = name;
+        const sq = cells.get(name);
+        const glyph = piece.trim();
+        const occupied = glyph !== "";
 
-        const occupied = piece.trim() !== "";
-        if (occupied) sq.innerHTML = `<span>${piece}</span>`;
+        if (sq.firstChild.textContent !== glyph) sq.firstChild.textContent = glyph;
 
-        if (lastMove?.from === name) sq.classList.add("from");
-        if (lastMove?.to === name) sq.classList.add("to");
-        if (canMoveFrom.has(name)) sq.classList.add("movable");
-        if (selected === name) sq.classList.add("selected");
-        if (targets.has(name)) {
-          sq.classList.add("target");
-          if (occupied) sq.classList.add("occupied");
-        }
-        board.appendChild(sq);
+        sq.classList.toggle("from", lastMove?.from === name);
+        sq.classList.toggle("to", lastMove?.to === name);
+        sq.classList.toggle("movable", canMoveFrom.has(name));
+        sq.classList.toggle("selected", selected === name);
+        sq.classList.toggle("target", targets.has(name));
+        sq.classList.toggle("occupied", targets.has(name) && occupied);
       });
     });
 
@@ -379,5 +400,6 @@
     $("status").textContent = "drag the pawn to a8 — Go offers four moves, so you are asked which";
   };
 
+  buildBoard();
   await setPosition("", []);
 </script>
