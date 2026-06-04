@@ -292,6 +292,8 @@ Each is a self-contained module. Run `gowasm test` inside any of them.
 | [`excel`](examples/excel) | Reading and writing real `.xlsx`, entirely in memory |
 | [`cue`](examples/cue) | A config language with no JavaScript implementation at all |
 | [`git`](examples/git) | A real git repository in memory: commits, branches, diffs |
+| [`image`](examples/image) | Blur, edges, tone and histograms, without a canvas |
+| [`qr`](examples/qr) | QR codes, where the interesting part is the redundancy |
 | [`chess`](examples/chess) | A domain model: enums, nested structs, legality |
 | [`chip8`](examples/chip8) | A framebuffer arriving as a `Uint8Array` |
 | [`blob`](examples/blob) | Binary exchange: gzip, digests, `Uint8Array[]`, variadic binary |

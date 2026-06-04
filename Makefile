@@ -9,7 +9,7 @@ DIST     := dist
 ARCHIVES := dist/archives
 EXAMPLES := urls blob worker-pool ginapi pdf \
             regex money gofmt chip8 chess sanitize expr text \
-            highlight excel cue git
+            highlight excel cue git image qr
 GOROOT_  := $(shell $(GO) env GOROOT)
 JS_EXEC  := $(GOROOT_)/lib/wasm/go_js_wasm_exec
 
@@ -247,7 +247,7 @@ lint: ## Vet and check formatting
 verify: lint test test-runtime examples ## Everything CI should run
 
 # Examples with a browser target get a demo page under demos/.
-DEMOS := regex chess chip8 text money gofmt highlight sanitize expr cue excel git pdf blob urls
+DEMOS := regex chess chip8 text money gofmt highlight sanitize expr cue excel git pdf blob urls image qr
 
 .PHONY: demo
 demo: build ## Build every demo package and serve the pages

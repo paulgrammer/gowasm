@@ -1,0 +1,209 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Image processing · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<style>
+  #canvas { max-width: 100%; border: 1px solid var(--line); border-radius: 7px;
+    display: block; background: repeating-conic-gradient(#e8e8e4 0 25%, #f6f6f2 0 50%) 0 0/16px 16px; }
+  .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 1rem;
+    text-align: center; color: var(--muted); cursor: pointer; font-size: .85rem; }
+  .drop.over { border-color: var(--accent); color: var(--fg); }
+  .ops button { margin: 0 .3rem .3rem 0; }
+  #hist { width: 100%; height: 5rem; display: block; }
+</style>
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>Image processing, in the page</h1>
+    <p>
+      Every operation here has a JavaScript equivalent, so this is not about
+      capability. It is about where the work happens: no canvas round trip, no
+      large image library, and no server that ends up holding your photograph.
+      The result crosses as encoded bytes and goes straight into a Blob URL.
+    </p>
+  </header>
+
+  <div class="layout" style="display:flex;gap:1.25rem;flex-wrap:wrap;align-items:flex-start">
+    <div style="flex:1 1 22rem;min-width:18rem">
+      <img id="canvas" alt="result" />
+      <p class="status" id="status"></p>
+      <canvas id="hist" width="512" height="120" title="histogram"></canvas>
+    </div>
+
+    <div style="flex:1 1 18rem;min-width:16rem">
+      <div class="panel">
+        <h2>Source</h2>
+        <div class="row">
+          <div><label for="pattern">Generated</label>
+            <select id="pattern">
+              <option value="wheel">colour wheel</option>
+              <option value="gradient">gradient</option>
+              <option value="checker">checkerboard</option>
+            </select></div>
+          <div style="flex:0 0 auto"><label>&nbsp;</label><button id="gen">Generate</button></div>
+        </div>
+        <div class="drop" id="drop" style="margin-top:.6rem">
+          or drop an image here
+          <input type="file" id="file" accept="image/*" hidden />
+        </div>
+      </div>
+
+      <div class="panel ops">
+        <h2>Operations</h2>
+        <button data-op="blur" class="secondary">Blur</button>
+        <button data-op="sharpen" class="secondary">Sharpen</button>
+        <button data-op="edgeDetect" class="secondary">Edges</button>
+        <button data-op="emboss" class="secondary">Emboss</button>
+        <button data-op="grayscale" class="secondary">Grayscale</button>
+        <button data-op="sepia" class="secondary">Sepia</button>
+        <button data-op="invert" class="secondary">Invert</button>
+        <button data-op="flipHorizontal" class="secondary">Flip</button>
+        <button data-op="rotate" class="secondary">Rotate 30°</button>
+        <button data-op="half" class="secondary">Half size</button>
+      </div>
+
+      <div class="panel">
+        <h2>Tone</h2>
+        <label for="brightness">Brightness <span id="vBrightness" class="muted"></span></label>
+        <input type="range" id="brightness" min="-0.8" max="0.8" step="0.05" value="0" />
+        <label for="contrast">Contrast <span id="vContrast" class="muted"></span></label>
+        <input type="range" id="contrast" min="-0.8" max="0.8" step="0.05" value="0" />
+        <label for="saturation">Saturation <span id="vSaturation" class="muted"></span></label>
+        <input type="range" id="saturation" min="-1" max="1" step="0.05" value="0" />
+        <label for="hue">Hue <span id="vHue" class="muted"></span></label>
+        <input type="range" id="hue" min="-180" max="180" step="5" value="0" />
+        <div class="row" style="margin-top:.7rem">
+          <div style="flex:0 0 auto"><button id="reset" class="secondary">Reset</button></div>
+          <div style="flex:0 0 auto"><button id="dl">Download PNG</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+  import { load, download } from "../shared/demo.js";
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/image/index.browser.js", $("status"));
+
+  let base = null;      // the unadjusted image, so tone sliders are not cumulative
+  let current = null;   // what is on screen
+  let url = null;
+
+  async function display(bytes, note) {
+    current = bytes;
+    if (url) URL.revokeObjectURL(url);
+    url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+    $("canvas").src = url;
+
+    const info = await api.inspect(bytes);
+    $("status").textContent =
+      `${info.width}×${info.height} ${info.format} · ${(info.bytes / 1024).toFixed(1)} kB` +
+      (note ? ` · ${note}` : "");
+    await drawHistogram(bytes);
+  }
+
+  async function drawHistogram(bytes) {
+    const h = await api.histogram(bytes);
+    const c = $("hist"), ctx = c.getContext("2d");
+    ctx.clearRect(0, 0, c.width, c.height);
+    const channels = [["red", "rgba(220,60,60,.55)"], ["green", "rgba(60,190,90,.55)"], ["blue", "rgba(70,120,240,.55)"]];
+    for (const [name, colour] of channels) {
+      ctx.fillStyle = colour;
+      ctx.beginPath();
+      ctx.moveTo(0, c.height);
+      h[name].forEach((n, i) => ctx.lineTo((i / 255) * c.width, c.height - (n / h.peak) * c.height));
+      ctx.lineTo(c.width, c.height);
+      ctx.fill();
+    }
+  }
+
+  async function generate() {
+    base = await api.generate($("pattern").value, 360, 360, "png");
+    resetSliders();
+    await display(base, "generated");
+  }
+
+  const ops = {
+    blur: (b) => api.blur(b, 3, "png"),
+    sharpen: (b) => api.sharpen(b, "png"),
+    edgeDetect: (b) => api.edgeDetect(b, "png"),
+    emboss: (b) => api.emboss(b, "png"),
+    grayscale: (b) => api.grayscale(b, "png"),
+    sepia: (b) => api.sepia(b, "png"),
+    invert: (b) => api.invert(b, "png"),
+    flipHorizontal: (b) => api.flipHorizontal(b, "png"),
+    rotate: (b) => api.rotate(b, 30, "png"),
+    half: async (b) => {
+      const i = await api.inspect(b);
+      return api.resize(b, Math.max(1, Math.round(i.width / 2)), 0, "png");
+    },
+  };
+
+  for (const btn of document.querySelectorAll("[data-op]")) {
+    btn.onclick = async () => {
+      try {
+        const started = performance.now();
+        // Operations chain, so effects stack. The tone sliders work from the
+        // current image, which becomes the new base.
+        base = await ops[btn.dataset.op](current);
+        resetSliders();
+        await display(base, `${btn.dataset.op} in ${Math.round(performance.now() - started)} ms`);
+      } catch (err) {
+        $("status").innerHTML = `<span class="err">${err.message}</span>`;
+      }
+    };
+  }
+
+  const sliders = ["brightness", "contrast", "saturation", "hue"];
+  function resetSliders() {
+    for (const id of sliders) {
+      $(id).value = 0;
+      $("v" + id[0].toUpperCase() + id.slice(1)).textContent = "0";
+    }
+  }
+
+  async function adjust() {
+    for (const id of sliders) {
+      $("v" + id[0].toUpperCase() + id.slice(1)).textContent = $(id).value;
+    }
+    try {
+      const out = await api.adjust(base, {
+        brightness: Number($("brightness").value),
+        contrast: Number($("contrast").value),
+        saturation: Number($("saturation").value),
+        gamma: 0,
+        hue: Number($("hue").value),
+      }, "png");
+      await display(out, "adjusted");
+    } catch (err) {
+      $("status").innerHTML = `<span class="err">${err.message}</span>`;
+    }
+  }
+  for (const id of sliders) $(id).addEventListener("change", adjust);
+
+  $("gen").onclick = generate;
+  $("pattern").onchange = generate;
+  $("reset").onclick = generate;
+  $("dl").onclick = () => current && download(current, "image.png", "image/png");
+
+  const drop = $("drop");
+  drop.onclick = () => $("file").click();
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+  drop.ondragleave = () => drop.classList.remove("over");
+  async function take(file) {
+    drop.classList.remove("over");
+    if (!file) return;
+    let bytes = new Uint8Array(await file.arrayBuffer());
+    // Large photographs are scaled down first, so an operation is interactive.
+    const info = await api.inspect(bytes).catch(() => null);
+    if (info && info.width > 900) bytes = await api.resize(bytes, 900, 0, "png");
+    base = bytes;
+    resetSliders();
+    await display(bytes, `loaded ${file.name}`);
+  }
+  drop.ondrop = (e) => { e.preventDefault(); take(e.dataTransfer.files[0]); };
+  $("file").onchange = (e) => take(e.target.files[0]);
+
+  await generate();
+</script>

@@ -1,0 +1,119 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>QR codes · gowasm</title>
+<link rel="stylesheet" href="../shared/style.css" />
+<style>
+  #code { display: block; max-width: 20rem; width: 100%; image-rendering: pixelated;
+    border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+  .swatch { display: flex; gap: .4rem; align-items: center; }
+  .swatch input[type=color] { width: 2.6rem; height: 2.2rem; padding: 2px; flex: 0 0 auto; }
+</style>
+<main>
+  <a class="back" href="../">← all demos</a>
+  <header>
+    <h1>QR codes, with the error correction visible</h1>
+    <p>
+      The interesting part is not drawing squares. It is Reed-Solomon
+      redundancy: the level you pick decides how much of the symbol can be
+      obscured before it stops scanning, and it costs space. Change the level
+      below and watch the symbol grow for the same content.
+    </p>
+  </header>
+
+  <div class="layout" style="display:flex;gap:1.25rem;flex-wrap:wrap;align-items:flex-start">
+    <div style="flex:0 0 auto">
+      <img id="code" alt="QR code" />
+      <p class="status" id="status"></p>
+      <button id="dl" class="secondary" style="margin-top:.4rem">Download PNG</button>
+    </div>
+
+    <div style="flex:1 1 20rem;min-width:18rem">
+      <div class="panel">
+        <h2>Content</h2>
+        <textarea id="content" rows="3" spellcheck="false">https://github.com/paulgrammer/gowasm</textarea>
+        <div class="row" style="margin-top:.6rem">
+          <div style="flex:0 0 9rem">
+            <label for="recovery">Recovery</label>
+            <select id="recovery">
+              <option value="low">low ~7%</option>
+              <option value="medium" selected>medium ~15%</option>
+              <option value="quart">quart ~25%</option>
+              <option value="high">high ~30%</option>
+            </select>
+          </div>
+          <div style="flex:0 0 7rem"><label for="size">Pixels/module</label>
+            <input id="size" type="number" value="8" min="1" max="40" /></div>
+          <div style="flex:0 0 7rem"><label for="border">Quiet zone</label>
+            <input id="border" type="number" value="4" min="1" max="20" /></div>
+        </div>
+        <div class="row" style="margin-top:.6rem">
+          <div class="swatch" style="flex:1 1 9rem">
+            <input type="color" id="fg" value="#101014" /><label for="fg" style="margin:0">Foreground</label>
+          </div>
+          <div class="swatch" style="flex:1 1 9rem">
+            <input type="color" id="bg" value="#ffffff" /><label for="bg" style="margin:0">Background</label>
+          </div>
+          <div style="flex:0 0 auto"><label><input type="checkbox" id="circular" style="width:auto" /> round modules</label></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>What that costs</h2>
+        <table>
+          <thead><tr><th>Recovery</th><th class="num">Version</th><th class="num">Modules</th><th class="num">Bytes it holds</th></tr></thead>
+          <tbody id="caps"></tbody>
+        </table>
+        <p class="muted" style="font-size:.82rem">
+          Higher redundancy needs a bigger symbol for the same content. Numeric
+          input packs about three times as densely as arbitrary bytes, which is
+          why a URL and a phone number of the same length differ so much.
+        </p>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+  import { load, onInput, download } from "../shared/demo.js";
+  const $ = (id) => document.getElementById(id);
+  const api = await load("../_pkg/qr/index.browser.js", $("status"));
+
+  let png = null, url = null;
+
+  async function render() {
+    try {
+      const s = await api.encode($("content").value, {
+        recovery: $("recovery").value,
+        size: Number($("size").value),
+        border: Number($("border").value),
+        foreground: $("fg").value,
+        background: $("bg").value,
+        circular: $("circular").checked,
+      });
+      png = s.png;
+
+      if (url) URL.revokeObjectURL(url);
+      url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+      $("code").src = url;
+
+      const [w, h] = await api.decode(png);
+      $("status").textContent =
+        `version ${s.version} · ${s.dimension} modules · ${w}×${h} px · ` +
+        `${(s.bytes / 1024).toFixed(1)} kB`;
+
+      const caps = await api.capacities($("content").value);
+      $("caps").innerHTML = caps.map((c) =>
+        `<tr${c.recovery === s.recovery ? ' style="font-weight:600"' : ""}>` +
+        `<td>${c.recovery}</td><td class="num">${c.version}</td>` +
+        `<td class="num">${17 + 4 * c.version}</td><td class="num">${c.byte.toLocaleString()}</td></tr>`
+      ).join("");
+    } catch (err) {
+      $("status").innerHTML = `<span class="err">${err.message}</span>`;
+    }
+  }
+
+  $("dl").onclick = () => png && download(png, "qr.png", "image/png");
+  ["content", "size", "border"].forEach((id) => onInput($(id), render, 200));
+  ["recovery", "fg", "bg", "circular"].forEach((id) => $(id).onchange = render);
+  render();
+</script>
