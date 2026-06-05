@@ -52,6 +52,15 @@ func initCmd(dir string, yes bool, out io.Writer) error {
 	if cfg.Package, err = p.AskValid("go package:", cfg.Package, validatePackageDir(abs)); err != nil {
 		return err
 	}
+	// Said here rather than after writing, so the offer is visible before the
+	// confirmation rather than as a surprise afterwards.
+	pkgDir := cfg.Package
+	if !filepath.IsAbs(pkgDir) {
+		pkgDir = filepath.Join(abs, pkgDir)
+	}
+	if !hasGoFiles(pkgDir) {
+		p.Printf("  no Go files there yet, so a starter package will be written\n")
+	}
 	if cfg.Out, err = p.Ask("output directory:", cfg.Out); err != nil {
 		return err
 	}
@@ -94,7 +103,19 @@ func initCmd(dir string, yes bool, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "\nwrote %s\n\nNext:\n  gowasm build\n", rel(abs, path))
+	fmt.Fprintf(out, "\nwrote %s\n", rel(abs, path))
+
+	// A new project has a module but no code, so gowasm build would fail on a
+	// package with nothing in it. Give it something that works.
+	wrote, err := writeStarter(abs, cfg.Package, modulePath(abs))
+	if err != nil {
+		return err
+	}
+	if wrote {
+		fmt.Fprintf(out, "wrote a starter package in %s\n", cfg.Package)
+	}
+
+	fmt.Fprintf(out, "\nNext:\n  gowasm build\n  gowasm test\n")
 	return nil
 }
 
@@ -191,6 +212,13 @@ func ensureGoModule(dir string, p *prompt.Prompter, out io.Writer) error {
 	return nil
 }
 
+// validatePackageDir accepts a directory that does not exist yet, or exists
+// with no Go files in it.
+//
+// Rejecting those was a dead end: in a new project the module has just been
+// created and there is no Go source anywhere, so every possible answer failed
+// validation and the question asked itself forever. A directory without Go
+// files is now a thing to fill in rather than a mistake.
 func validatePackageDir(base string) func(string) error {
 	return func(p string) error {
 		if p == "" {
@@ -201,17 +229,153 @@ func validatePackageDir(base string) func(string) error {
 			target = filepath.Join(base, p)
 		}
 		info, err := os.Stat(target)
+		if os.IsNotExist(err) {
+			return nil
+		}
 		if err != nil {
-			return fmt.Errorf("%s does not exist", p)
+			return fmt.Errorf("%s: %w", p, err)
 		}
 		if !info.IsDir() {
 			return fmt.Errorf("%s is not a directory", p)
 		}
-		if !hasGoFiles(target) {
-			return fmt.Errorf("%s contains no .go files", p)
-		}
 		return nil
 	}
+}
+
+// starter is the package written into an empty project, so that gowasm build
+// works immediately rather than failing on a directory with nothing in it.
+//
+// It is deliberately small but not trivial: a struct, an enum from constants,
+// an error path and an Example function, so the first build demonstrates the
+// type mapping and records a behavioural fixture.
+const starter = `// Package %[1]s is where your Go code goes.
+//
+// Every exported function here becomes a TypeScript function in the generated
+// package. There is nothing to annotate: write ordinary Go, run gowasm build,
+// and call it from JavaScript.
+package %[1]s
+
+import (
+	"fmt"
+	"strings"
+)
+
+// Tone selects how enthusiastic a greeting is. Constants of a named type
+// become a TypeScript literal union, so a typo is a compile error.
+type Tone string
+
+const (
+	Plain Tone = "plain"
+	Loud  Tone = "loud"
+)
+
+// Greeting is what Greet returns. Struct fields use their json tags for names.
+type Greeting struct {
+	Text string %[2]sjson:"text"%[2]s
+	// Length is in characters, not bytes.
+	Length int %[2]sjson:"length"%[2]s
+}
+
+// Greet builds a greeting. The error becomes a rejected promise.
+func Greet(name string, tone Tone) (Greeting, error) {
+	if strings.TrimSpace(name) == "" {
+		return Greeting{}, fmt.Errorf("a greeting needs a name")
+	}
+
+	text := "Hello, " + name + "."
+	if tone == Loud {
+		text = strings.ToUpper("Hello, " + name + "!")
+	}
+	return Greeting{Text: text, Length: len([]rune(text))}, nil
+}
+`
+
+const starterTest = `package %[1]s_test
+
+import (
+	"fmt"
+
+	"%[2]s"
+)
+
+// Calls in an Example function with literal arguments are run by gowasm and
+// replayed as TypeScript tests, so this expectation cannot drift from the code.
+
+func ExampleGreet() {
+	g, _ := %[1]s.Greet("world", %[1]s.Plain)
+	fmt.Println(g.Text, g.Length)
+	// Output: Hello, world. 13
+}
+
+func ExampleGreet_loud() {
+	g, _ := %[1]s.Greet("world", %[1]s.Loud)
+	fmt.Println(g.Text)
+	// Output: HELLO, WORLD!
+}
+
+func ExampleGreet_noName() {
+	_, err := %[1]s.Greet("  ", %[1]s.Plain)
+	fmt.Println(err)
+	// Output: a greeting needs a name
+}
+`
+
+// writeStarter creates a working package at dir when it holds no Go files.
+// It reports whether anything was written.
+func writeStarter(base, pkgPath, modulePath string) (bool, error) {
+	target := pkgPath
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(base, pkgPath)
+	}
+	if hasGoFiles(target) {
+		return false, nil
+	}
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		return false, err
+	}
+
+	// At the module root the directory name is incidental -- it can be a
+	// checkout path, or a numbered temporary directory -- while the module's
+	// last segment is the name the project actually goes by.
+	source := filepath.Base(target)
+	if p := strings.Trim(pkgPath, "./"); p == "" {
+		source = filepath.Base(modulePath)
+	}
+	name := goPackageName(source)
+	importPath := modulePath
+	if rel := strings.TrimPrefix(strings.TrimPrefix(pkgPath, "."), "/"); rel != "" {
+		importPath = modulePath + "/" + filepath.ToSlash(rel)
+	}
+
+	files := map[string]string{
+		name + ".go":      fmt.Sprintf(starter, name, "`"),
+		"example_test.go": fmt.Sprintf(starterTest, name, importPath),
+	}
+	for filename, body := range files {
+		path := filepath.Join(target, filename)
+		if _, err := os.Stat(path); err == nil {
+			continue // never overwrite something already there
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			return false, fmt.Errorf("writing %s: %w", path, err)
+		}
+	}
+	return true, nil
+}
+
+// goPackageName reduces a name to something legal as a Go package identifier.
+func goPackageName(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	out := b.String()
+	if out == "" || (out[0] >= '0' && out[0] <= '9') {
+		out = "app" + out
+	}
+	return out
 }
 
 func validateTargets(s string) error {
