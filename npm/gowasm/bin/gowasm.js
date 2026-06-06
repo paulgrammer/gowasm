@@ -53,9 +53,18 @@ try {
 } catch {
   console.error(
     `gowasm: the platform package ${pkg} is not installed.\n` +
-      `It should have come in automatically as an optional dependency.\n` +
-      `Try reinstalling, or install it directly:\n` +
-      `  npm install ${pkg}`,
+      `\n` +
+      `It should have arrived automatically as an optional dependency. The\n` +
+      `usual cause is a stale metadata cache: if this version was published\n` +
+      `very recently, your package manager may have resolved from a cached\n` +
+      `copy that did not list it yet, and skipped it silently because\n` +
+      `optional dependencies are allowed to fail.\n` +
+      `\n` +
+      `Reinstalling against the registry fixes it:\n` +
+      `  npm install --prefer-online ${pkg}\n` +
+      `\n` +
+      `If that does not help, install from source instead:\n` +
+      `  go install github.com/paulgrammer/gowasm/cmd/gowasm@latest`,
   );
   process.exit(1);
 }
