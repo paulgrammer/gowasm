@@ -30,8 +30,9 @@ func publish(cfg *config.Config, env *goenv.Env, r *runner.Runner, out io.Writer
 	}
 
 	outDir := cfg.OutDir()
-	if _, ok := runner.Look("npm"); !ok {
-		return fmt.Errorf("npm not found on PATH")
+	m := cfg.Manager()
+	if !m.Available() {
+		return fmt.Errorf("%s is not on PATH", m)
 	}
 
 	name, version, err := manifestIdentity(outDir)
@@ -42,10 +43,9 @@ func publish(cfg *config.Config, env *goenv.Env, r *runner.Runner, out io.Writer
 		return fmt.Errorf("%s has no dist/ to publish; run 'gowasm build' first", rel(cfg.Dir, outDir))
 	}
 
-	fmt.Fprintf(out, "publishing %s@%s from %s\n", name, version, rel(cfg.Dir, outDir))
+	fmt.Fprintf(out, "publishing %s@%s from %s with %s\n", name, version, rel(cfg.Dir, outDir), m)
 
-	args := append([]string{"publish"}, npmArgs...)
-	return r.Run(outDir, nil, "npm", args...)
+	return r.Run(outDir, nil, string(m), m.PublishArgs("", npmArgs)...)
 }
 
 // manifestIdentity reads back what is about to be published, so the name and

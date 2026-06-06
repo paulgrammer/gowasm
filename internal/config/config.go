@@ -10,6 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/paulgrammer/gowasm/internal/pkgmgr"
 	"github.com/paulgrammer/gowasm/internal/tsmap"
 )
 
@@ -32,7 +33,11 @@ type Config struct {
 	Out     string   `yaml:"out"`
 	NPM     NPM      `yaml:"npm"`
 	Targets []string `yaml:"targets"`
-	Int64   string   `yaml:"int64,omitempty"`
+	// PackageManager runs the generated package's install, build and publish.
+	// It is recorded rather than detected on each run, so a project does not
+	// change behaviour because of what happens to be installed.
+	PackageManager string `yaml:"packageManager,omitempty"`
+	Int64          string `yaml:"int64,omitempty"`
 
 	// Dir is the directory holding the config; every relative path resolves
 	// against it, so commands work from any subdirectory.
@@ -96,6 +101,9 @@ func (c *Config) applyDefaults() {
 	if c.Int64 == "" {
 		c.Int64 = string(tsmap.Int64Number)
 	}
+	if c.PackageManager == "" {
+		c.PackageManager = string(pkgmgr.NPM)
+	}
 }
 
 // Validate reports the first problem that would make generation fail.
@@ -111,6 +119,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("targets: unknown target %q, want node or browser", t)
 		}
 	}
+	if _, err := pkgmgr.Parse(c.PackageManager); err != nil {
+		return fmt.Errorf("packageManager: %w", err)
+	}
 	switch tsmap.Int64Mode(c.Int64) {
 	case tsmap.Int64Number, tsmap.Int64String:
 	default:
@@ -121,6 +132,15 @@ func (c *Config) Validate() error {
 
 // Int64Mode is the validated int64 setting.
 func (c *Config) Int64Mode() tsmap.Int64Mode { return tsmap.Int64Mode(c.Int64) }
+
+// Manager is the validated package manager.
+func (c *Config) Manager() pkgmgr.Manager {
+	m, err := pkgmgr.Parse(c.PackageManager)
+	if err != nil {
+		return pkgmgr.NPM
+	}
+	return m
+}
 
 // OutDir is the absolute path of the generated npm package.
 func (c *Config) OutDir() string { return c.abs(c.Out) }

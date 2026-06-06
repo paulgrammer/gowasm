@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/paulgrammer/gowasm/internal/config"
+	"github.com/paulgrammer/gowasm/internal/pkgmgr"
 	"github.com/paulgrammer/gowasm/internal/prompt"
 	"github.com/paulgrammer/gowasm/internal/runner"
 	"gopkg.in/yaml.v3"
@@ -80,6 +81,10 @@ func initCmd(dir string, yes bool, out io.Writer) error {
 	}
 	cfg.Targets = splitTargets(targets)
 
+	if cfg.PackageManager, err = p.AskValid("package manager:", cfg.PackageManager, validateManager); err != nil {
+		return err
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -126,9 +131,12 @@ func defaults(dir string) *config.Config {
 		Out:     "./node",
 		Package: ".",
 		Targets: []string{"node", "browser"},
-		Int64:   "number",
-		NPM:     config.NPM{Version: "0.1.0", License: "MIT"},
-		Dir:     dir,
+		// Detected from a lockfile if the project has one, so an existing
+		// choice is honoured rather than overridden.
+		PackageManager: string(pkgmgr.Detect(dir)),
+		Int64:          "number",
+		NPM:            config.NPM{Version: "0.1.0", License: "MIT"},
+		Dir:            dir,
 	}
 
 	if mod := modulePath(dir); mod != "" {
@@ -169,6 +177,9 @@ func merge(cfg, prev *config.Config) {
 	}
 	if prev.Int64 != "" {
 		cfg.Int64 = prev.Int64
+	}
+	if prev.PackageManager != "" {
+		cfg.PackageManager = prev.PackageManager
 	}
 	if prev.NPM.Name != "" {
 		cfg.NPM.Name = prev.NPM.Name
@@ -376,6 +387,19 @@ func goPackageName(name string) string {
 		out = "app" + out
 	}
 	return out
+}
+
+func validateManager(s string) error {
+	m, err := pkgmgr.Parse(s)
+	if err != nil {
+		return err
+	}
+	if !m.Available() {
+		// Not fatal: someone may be configuring a project for a machine other
+		// than this one. Worth saying, though, since the next build will fail.
+		return fmt.Errorf("%s is not installed here; install it or choose another", m)
+	}
+	return nil
 }
 
 func validateTargets(s string) error {

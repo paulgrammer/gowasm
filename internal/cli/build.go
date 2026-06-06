@@ -5,10 +5,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/paulgrammer/gowasm/internal/config"
 	"github.com/paulgrammer/gowasm/internal/goenv"
 	"github.com/paulgrammer/gowasm/internal/overlay"
+	"github.com/paulgrammer/gowasm/internal/pkgmgr"
 	"github.com/paulgrammer/gowasm/internal/runner"
 	"github.com/paulgrammer/gowasm/internal/wasmbridge"
 )
@@ -72,19 +74,22 @@ func build(cfg *config.Config, env *goenv.Env, r *runner.Runner, out io.Writer, 
 
 func buildNPM(cfg *config.Config, r *runner.Runner, out io.Writer) error {
 	outDir := cfg.OutDir()
-	if _, ok := runner.Look("npm"); !ok {
-		return fmt.Errorf("npm not found on PATH; it is needed to compile the TypeScript")
+	m := cfg.Manager()
+	if !m.Available() {
+		return fmt.Errorf("%s is not on PATH; it is needed to compile the TypeScript.\n"+
+			"  Install it, or set packageManager in gowasm.yaml to one of: %s",
+			m, strings.Join(pkgmgr.Names(), ", "))
 	}
 
 	if _, err := os.Stat(filepath.Join(outDir, "node_modules")); os.IsNotExist(err) {
-		fmt.Fprintln(out, "installing npm dev dependencies")
-		if err := r.Run(outDir, nil, "npm", "install", "--silent"); err != nil {
+		fmt.Fprintf(out, "installing dev dependencies with %s\n", m)
+		if err := r.Run(outDir, nil, string(m), append(m.InstallArgs(), m.Quiet()...)...); err != nil {
 			return err
 		}
 	}
 
 	fmt.Fprintln(out, "compiling TypeScript")
-	return r.Run(outDir, nil, "npm", "run", "--silent", "build")
+	return r.Run(outDir, nil, string(m), append(m.RunArgs("build"), m.Quiet()...)...)
 }
 
 func mustRel(base, path string) string {

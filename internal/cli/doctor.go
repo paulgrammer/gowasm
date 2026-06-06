@@ -8,7 +8,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/paulgrammer/gowasm/internal/config"
 	"github.com/paulgrammer/gowasm/internal/goenv"
+	"github.com/paulgrammer/gowasm/internal/pkgmgr"
 	"github.com/paulgrammer/gowasm/internal/runner"
 )
 
@@ -58,11 +60,28 @@ func doctor(dir string, out io.Writer) error {
 		report(ok, "node", detail)
 	}
 
-	if _, ok := runner.Look("npm"); !ok {
-		report(false, "npm", "not found on PATH")
+	// Any one of these is enough, so a missing yarn is not a failure when the
+	// project uses pnpm. What matters is that the configured one is present,
+	// which the build checks; here the point is to show what is available.
+	found := []string{}
+	for _, m := range pkgmgr.All() {
+		if v := m.Version(); v != "" {
+			found = append(found, fmt.Sprintf("%s %s", m, v))
+		}
+	}
+	if len(found) == 0 {
+		report(false, "package manager", "none of "+strings.Join(pkgmgr.Names(), ", ")+" found")
 	} else {
-		v, _ := runner.Output(dir, "npm", "--version")
-		report(true, "npm", v)
+		report(true, "package manager", strings.Join(found, ", "))
+	}
+
+	if cfg, err := config.Load(dir); err == nil {
+		m := cfg.Manager()
+		if m.Available() {
+			report(true, "configured manager", string(m))
+		} else {
+			report(false, "configured manager", string(m)+" is set in gowasm.yaml but not installed")
+		}
 	}
 
 	if problems > 0 {

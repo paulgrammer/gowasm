@@ -302,8 +302,22 @@ npm:
   author:      Ada Lovelace <ada@example.com>
   repository:  github.com/acme/urls
 targets: [node, browser]
+packageManager: npm      # npm | pnpm | yarn | bun
 int64:   number          # number | string
 ```
+
+`gowasm init` detects the package manager from a lockfile if the project has
+one, so an existing choice is honoured rather than overridden, and asks
+otherwise. It is recorded in the config rather than detected on each run, so a
+project does not change behaviour because of what happens to be installed on a
+given machine.
+
+Three differences between the managers are handled for you, because each fails
+quietly rather than loudly: `bun test` runs Bun's own test runner and ignores
+the package's test script, so scripts always go through `run`; yarn moved
+publishing to `yarn npm publish` in version 2, so the right command depends on
+which yarn is installed; and pnpm refuses to publish from a directory with
+uncommitted changes, which a generated directory always has.
 
 `gowasm init` fills this in by asking, inferring what it can from your project:
 the package name from your Go module path, the author from `git config`, the

@@ -15,6 +15,9 @@ func testCmd(cfg *config.Config, env *goenv.Env, r *runner.Runner, out io.Writer
 	if err := build(cfg, env, r, out, opts); err != nil {
 		return err
 	}
-	fmt.Fprintln(out, "running tests")
-	return r.Run(cfg.OutDir(), nil, "npm", "test", "--silent")
+	m := cfg.Manager()
+	fmt.Fprintf(out, "running tests with %s\n", m)
+	// Always through `run`: bun test would run Bun's own test runner and never
+	// look at the package's test script.
+	return r.Run(cfg.OutDir(), nil, string(m), append(m.RunArgs("test"), m.Quiet()...)...)
 }
