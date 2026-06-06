@@ -358,9 +358,13 @@ func writeStarter(base, pkgPath, modulePath string) (bool, error) {
 		importPath = modulePath + "/" + filepath.ToSlash(rel)
 	}
 
+	// Go pairs foo.go with foo_test.go. example_test.go is a real convention
+	// too, used in the standard library for files holding nothing but Example
+	// functions, but for a one-file starter the matching name reads better and
+	// is what people expect to find.
 	files := map[string]string{
 		name + ".go":      fmt.Sprintf(starter, name, "`"),
-		"example_test.go": fmt.Sprintf(starterTest, name, importPath),
+		name + "_test.go": fmt.Sprintf(starterTest, name, importPath),
 	}
 	for filename, body := range files {
 		path := filepath.Join(target, filename)

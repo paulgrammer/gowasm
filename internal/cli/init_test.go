@@ -82,14 +82,18 @@ func TestWriteStarterNamesThePackageAfterItsDirectory(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", c.path, err)
 		}
-		var found bool
-		for _, e := range entries {
-			if e.Name() == c.want+".go" {
-				found = true
+		// The package file and its test are named after the package, the way Go
+		// pairs foo.go with foo_test.go.
+		for _, want := range []string{c.want + ".go", c.want + "_test.go"} {
+			var found bool
+			for _, e := range entries {
+				if e.Name() == want {
+					found = true
+				}
 			}
-		}
-		if !found {
-			t.Errorf("%s: expected %s.go among %v", c.path, c.want, names(entries))
+			if !found {
+				t.Errorf("%s: expected %s among %v", c.path, want, names(entries))
+			}
 		}
 	}
 }
