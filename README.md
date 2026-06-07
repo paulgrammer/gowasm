@@ -72,7 +72,7 @@ npm install --save-dev @paulgrammer/gowasm
     "test:wasm": "gowasm test"
   },
   "devDependencies": {
-    "@paulgrammer/gowasm": "^0.3.0"
+    "@paulgrammer/gowasm": "^0.4.0"
   }
 }
 ```
