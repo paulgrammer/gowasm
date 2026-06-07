@@ -18,6 +18,11 @@ import {
   type {{.}},
 {{- end}}
 } from "../dist/index.node.js";
+{{- if .NSImport}}
+// Imported for its types alone: a value an enum does not admit is cast, and
+// the cast has to name the type where it actually lives.
+import type * as {{.NS}} from "../dist/{{.NS}}.node.js";
+{{- end}}
 {{if .UsesBytes}}
 // Binary fixtures are stored base64-encoded, the way Go recorded them, and
 // converted here so they compare against the typed arrays the API returns.
@@ -38,15 +43,15 @@ after(async () => {
 test({{.Title}}, async () => {
 {{- if .Error}}
   await assert.rejects(
-    () => client.{{.JSFunc}}({{.Args}}),
+    () => client{{$.Sel}}.{{.JSFunc}}({{.Args}}),
     (err: unknown) =>
       err instanceof GoError && err.message === {{.ErrorLiteral}},
   );
 {{- else if .Void}}
-  assert.equal(await client.{{.JSFunc}}({{.Args}}), undefined);
+  assert.equal(await client{{$.Sel}}.{{.JSFunc}}({{.Args}}), undefined);
 {{- else}}
   assert.deepEqual(
-    await client.{{.JSFunc}}({{.Args}}),
+    await client{{$.Sel}}.{{.JSFunc}}({{.Args}}),
     {{.Result}},
   );
 {{- end}}

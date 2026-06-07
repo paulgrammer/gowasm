@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/paulgrammer/gowasm/internal/tsmap"
@@ -170,5 +171,60 @@ func TestBuiltinsOnlyWhenUsed(t *testing.T) {
 	}
 	if !mod.UsesISODateTime {
 		t.Error("UsesISODateTime should be set: the package has time.Time")
+	}
+}
+
+// A lone package keeps the flat API, so its wire names and its generated
+// TypeScript are exactly what they were before namespacing existed.
+func TestOnePackageIsNotNamespaced(t *testing.T) {
+	b, err := LoadAll(Options{Dir: "testdata/mapping", Int64: tsmap.Int64Number},
+		[]Package{{Pattern: ".", Namespace: "mapping"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Multi() {
+		t.Error("one package must not be treated as several")
+	}
+	mod := b.Modules[0]
+	if mod.Namespace != "" {
+		t.Errorf("namespace = %q, want empty for a lone package", mod.Namespace)
+	}
+	if got := mod.Wire(mod.Funcs[0]); got != mod.Funcs[0].JSName {
+		t.Errorf("wire name = %q, want the bare %q", got, mod.Funcs[0].JSName)
+	}
+}
+
+// Two packages that both export the same name are the whole point: the
+// namespace is what keeps them apart on the wire.
+func TestSeveralPackagesAreNamespaced(t *testing.T) {
+	b, err := LoadAll(Options{Dir: "testdata/mapping", Int64: tsmap.Int64Number},
+		[]Package{{Pattern: ".", Namespace: "a"}, {Pattern: ".", Namespace: "b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !b.Multi() {
+		t.Fatal("two packages must namespace their exports")
+	}
+	first := b.Modules[0].Funcs[0]
+	wireA := b.Modules[0].Wire(first)
+	wireB := b.Modules[1].Wire(first)
+	if wireA == wireB {
+		t.Errorf("both packages register %q; the namespace is not being applied", wireA)
+	}
+	if wireA != "a."+first.JSName {
+		t.Errorf("wire name = %q, want %q", wireA, "a."+first.JSName)
+	}
+}
+
+// A missing package has to name the path, not just fail somewhere inside the
+// loader with no clue which entry was wrong.
+func TestLoadAllNamesTheOffendingPackage(t *testing.T) {
+	_, err := LoadAll(Options{Dir: "testdata/mapping", Int64: tsmap.Int64Number},
+		[]Package{{Pattern: ".", Namespace: "a"}, {Pattern: "./nope", Namespace: "nope"}})
+	if err == nil {
+		t.Fatal("a package that does not exist should fail")
+	}
+	if !strings.Contains(err.Error(), "./nope") {
+		t.Errorf("the error should name ./nope, got: %v", err)
 	}
 }

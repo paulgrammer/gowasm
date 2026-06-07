@@ -140,6 +140,10 @@ node/
 Files ending in `.gen.test.ts` are rewritten on every run. A test file without
 that infix is yours and is never touched.
 
+A project exposing several Go packages gets one `src/generated/<namespace>/`
+directory and one `src/<namespace>.<target>.ts` entry per package, and its test
+files are prefixed the same way — see [Several packages](#several-packages).
+
 Nothing is written into your own source tree — not even the Go glue that
 registers your functions, nor the runtime that serves it. Both are supplied to
 the compiler through `go build -overlay`, so there is no generated directory to
@@ -277,6 +281,7 @@ Each is a self-contained module. Run `gowasm test` inside any of them.
 | [`blob`](examples/blob) | Binary exchange: gzip, digests, `Uint8Array[]`, variadic binary |
 | [`worker-pool`](examples/worker-pool) | [Brandur Leach's Go worker pool](https://brandur.org/go-worker-pool), driven from Node |
 | [`ginapi`](examples/ginapi) | A [Gin](https://gin-gonic.com) application behind a real Node HTTP server |
+| [`multi`](examples/multi) | Three packages in one npm package, all three exporting `New` |
 
 The first few are the point of the tool: each is something the JavaScript
 ecosystem either does worse or cannot do at all. `regex` is the sharpest —
@@ -292,7 +297,8 @@ Routing, binding, validation and middleware all still run in Go.
 ## Configuration
 
 ```yaml
-package: ./urls          # the Go package to expose
+packages:
+  - ./urls               # the Go packages to expose
 out:     ./node          # where the npm package is written
 npm:
   name:        "@acme/urls"
@@ -305,6 +311,45 @@ targets: [node, browser]
 packageManager: npm      # npm | pnpm | yarn | bun
 int64:   number          # number | string
 ```
+
+### Several packages
+
+`packages:` is a list, so a project laid out as `pkg/lib`, `pkg/store` and
+`internal/api` exposes all three without a hand-written facade:
+
+```yaml
+packages:
+  - ./pkg/lib            # namespace: lib
+  - ./pkg/store          # namespace: store
+  - path: ./internal/api # give a namespace explicitly when two packages
+    as: admin            # would otherwise share a directory name
+```
+
+Each package gets its own namespace in TypeScript, so two of them may both
+export `New` without either being renamed:
+
+```ts
+import { lib, store } from "@acme/thing";
+
+const m: lib.Match = await lib.extract("…");
+await store.get("key");
+```
+
+A namespace is also a subpath export, for consumers who want one package and
+none of the others:
+
+```ts
+import { extract } from "@acme/thing/lib";
+```
+
+One WebAssembly module serves every namespace, however you import them:
+splitting per package would multiply a multi-megabyte module by the number of
+packages, and the Go runtime inside it is the bulk of that weight either way.
+
+A project with a single package keeps the flat API — `extract(…)`, not
+`lib.extract(…)` — because there is nothing to disambiguate. Adding a second
+package therefore restructures the published API, so `gowasm generate` says so
+rather than letting the change be discovered on the next install.
 
 `gowasm init` detects the package manager from a lockfile if the project has
 one, so an existing choice is honoured rather than overridden, and asks

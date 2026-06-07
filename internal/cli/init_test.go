@@ -19,7 +19,7 @@ func TestValidatePackageDirAcceptsEmptyAndMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	validate := validatePackageDir(base)
+	validate := validatePackageDirs(base)
 	cases := []struct {
 		path string
 		ok   bool
@@ -30,6 +30,9 @@ func TestValidatePackageDirAcceptsEmptyAndMissing(t *testing.T) {
 		{"./does-not-exist", true, "a directory that will be created"},
 		{"./afile", false, "a file is not a package"},
 		{"", false, "no answer at all"},
+		{"./empty,./does-not-exist", true, "several packages, each its own namespace"},
+		{"./empty,./empty", false, "the same package twice would collide"},
+		{"./empty,./afile", false, "one bad entry fails the whole list"},
 	}
 	for _, c := range cases {
 		err := validate(c.path)

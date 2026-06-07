@@ -55,24 +55,35 @@ type record struct {
 	Void   bool              `json:"void,omitempty"`
 }
 
-// Record runs every call and captures its outcome.
+// Group is one package's example calls, kept together so a call can be
+// rendered against the package it belongs to.
+type Group struct {
+	Module *scan.Module
+	Calls  []scan.ExampleCall
+}
+
+// Record runs every call and captures its outcome, returning one slice of
+// fixtures per group in the order the groups were given.
+//
+// Every package is recorded by a single generated program. Compiling for
+// js/wasm is the expensive part, so a project with several packages pays for
+// one build rather than one per package.
 //
 // execWrapper is the go_js_wasm_exec helper from GOROOT. The recorder runs
 // under js/wasm, the same target the generated tests exercise, rather than on
 // the host: anything that differs between the two -- timing, word size,
 // available syscalls -- would otherwise be baked into an expectation that the
 // tests then fail to meet.
-func Record(dir, execWrapper string, mod *scan.Module, calls []scan.ExampleCall) ([]Fixture, error) {
-	if len(calls) == 0 {
-		return nil, nil
+func Record(dir, execWrapper string, groups []Group) ([][]Fixture, error) {
+	total := 0
+	for _, g := range groups {
+		total += len(g.Calls)
+	}
+	if total == 0 {
+		return make([][]Fixture, len(groups)), nil
 	}
 
-	byName := map[string]scan.Func{}
-	for _, f := range mod.Funcs {
-		byName[f.GoName] = f
-	}
-
-	src, err := renderRecorder(mod, calls, byName)
+	src, err := renderRecorder(groups)
 	if err != nil {
 		return nil, err
 	}
@@ -97,31 +108,38 @@ func Record(dir, execWrapper string, mod *scan.Module, calls []scan.ExampleCall)
 	if err != nil {
 		return nil, err
 	}
-	if len(records) != len(calls) {
-		return nil, fmt.Errorf("recorded %d fixture(s) for %d call(s)", len(records), len(calls))
+	if len(records) != total {
+		return nil, fmt.Errorf("recorded %d fixture(s) for %d call(s)", len(records), total)
 	}
 
-	out := make([]Fixture, 0, len(calls))
-	for i, c := range calls {
-		r := records[i]
-		f := Fixture{
-			NonDeterministic: i < len(second) && !sameOutcome(r, second[i]),
-			Example:          c.Example,
-			JSFunc:           c.JSFunc,
-			Pos:              c.Pos,
-			Error:            r.Error,
-			Void:             r.Void,
+	out := make([][]Fixture, len(groups))
+	next := 0
+	for gi, g := range groups {
+		fixtures := make([]Fixture, 0, len(g.Calls))
+		for _, c := range g.Calls {
+			i := next
+			next++
+			r := records[i]
+			f := Fixture{
+				NonDeterministic: i < len(second) && !sameOutcome(r, second[i]),
+				Example:          c.Example,
+				JSFunc:           c.JSFunc,
+				Pos:              c.Pos,
+				Error:            r.Error,
+				Void:             r.Void,
+			}
+			// The arguments come back re-encoded from their decoded Go values,
+			// so every non-omitempty field is present and the literal is
+			// guaranteed to satisfy the generated TypeScript interface.
+			for _, a := range r.Args {
+				f.Args = append(f.Args, string(a))
+			}
+			if len(r.Result) > 0 {
+				f.Result = string(r.Result)
+			}
+			fixtures = append(fixtures, f)
 		}
-		// The arguments come back re-encoded from their decoded Go values, so
-		// every non-omitempty field is present and the literal is guaranteed to
-		// satisfy the generated TypeScript interface.
-		for _, a := range r.Args {
-			f.Args = append(f.Args, string(a))
-		}
-		if len(r.Result) > 0 {
-			f.Result = string(r.Result)
-		}
-		out = append(out, f)
+		out[gi] = fixtures
 	}
 	return out, nil
 }
@@ -161,20 +179,34 @@ func sameOutcome(a, b record) bool {
 	return string(a.Result) == string(b.Result) && a.Error == b.Error && a.Void == b.Void
 }
 
-func renderRecorder(mod *scan.Module, calls []scan.ExampleCall, byName map[string]scan.Func) ([]byte, error) {
-	imp := newImports(mod.PkgPath)
+func renderRecorder(groups []Group) ([]byte, error) {
+	imp := newImports()
+
+	// Every package is registered before anything is rendered: one may take a
+	// type declared in another, and the qualifier has to know its alias by the
+	// time it sees that type.
+	aliases := make([]string, len(groups))
+	for i, g := range groups {
+		aliases[i] = imp.user(g.Module)
+	}
 
 	var body strings.Builder
-	for i, c := range calls {
-		f, ok := byName[c.GoFunc]
-		if !ok {
-			return nil, fmt.Errorf("%s: unknown function %s", c.Pos, c.GoFunc)
+	for gi, g := range groups {
+		byName := map[string]scan.Func{}
+		for _, f := range g.Module.Funcs {
+			byName[f.GoName] = f
 		}
-		block, err := renderCall(i, c, f, imp)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", c.Pos, err)
+		for _, c := range g.Calls {
+			f, ok := byName[c.GoFunc]
+			if !ok {
+				return nil, fmt.Errorf("%s: unknown function %s", c.Pos, c.GoFunc)
+			}
+			block, err := renderCall(c, f, aliases[gi], imp)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", c.Pos, err)
+			}
+			body.WriteString(block)
 		}
-		body.WriteString(block)
 	}
 
 	var buf bytes.Buffer
@@ -218,7 +250,7 @@ func reencode(v any) json.RawMessage {
 
 `
 
-func renderCall(i int, c scan.ExampleCall, f scan.Func, imp *imports) (string, error) {
+func renderCall(c scan.ExampleCall, f scan.Func, alias string, imp *imports) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\tout = append(out, func() (r record) {\n")
 	// A panic in the user's code should fail one fixture, not the whole run.
@@ -246,8 +278,7 @@ func renderCall(i int, c scan.ExampleCall, f scan.Func, imp *imports) (string, e
 		fmt.Fprintf(&b, "\t\tr.Args = append(r.Args, reencode(p%d))\n", j)
 	}
 
-	imp.addAlias("userpkg", imp.userPath)
-	call := fmt.Sprintf("userpkg.%s(%s)", f.GoName, strings.Join(args, ", "))
+	call := fmt.Sprintf("%s.%s(%s)", alias, f.GoName, strings.Join(args, ", "))
 
 	n := len(f.Results)
 	switch {
@@ -274,7 +305,6 @@ func renderCall(i int, c scan.ExampleCall, f scan.Func, imp *imports) (string, e
 	}
 
 	b.WriteString("\t\treturn r\n\t}())\n")
-	_ = i
 	return b.String(), nil
 }
 
@@ -292,16 +322,28 @@ func backquote(s string) string {
 type importSpec struct{ alias, path string }
 
 type imports struct {
-	userPath string
-	byPath   map[string]string
+	userAliases map[string]string
+	byPath      map[string]string
 }
 
-func newImports(userPath string) *imports {
-	i := &imports{userPath: userPath, byPath: map[string]string{}}
+func newImports() *imports {
+	i := &imports{userAliases: map[string]string{}, byPath: map[string]string{}}
 	i.add("encoding/json")
 	i.add("fmt")
 	i.add("os")
 	return i
+}
+
+// user registers a recorded package and returns its alias. A lone package
+// keeps the name userpkg, so single-package output does not change.
+func (i *imports) user(mod *scan.Module) string {
+	alias := "userpkg"
+	if mod.Namespace != "" {
+		alias = "pkg_" + mod.Namespace
+	}
+	i.userAliases[mod.PkgPath] = alias
+	i.addAlias(alias, mod.PkgPath)
+	return alias
 }
 
 func (i *imports) add(path string)             { i.addAlias("", path) }
@@ -311,9 +353,9 @@ func (i *imports) qualifier(p *types.Package) string {
 	if p == nil {
 		return ""
 	}
-	if p.Path() == i.userPath {
-		i.addAlias("userpkg", p.Path())
-		return "userpkg"
+	if alias, exposed := i.userAliases[p.Path()]; exposed {
+		i.addAlias(alias, p.Path())
+		return alias
 	}
 	i.add(p.Path())
 	return p.Name()

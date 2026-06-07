@@ -30,6 +30,38 @@ type Options struct {
 	Int64   tsmap.Int64Mode
 }
 
+// Package names one package to scan, and the namespace its exports take.
+type Package struct {
+	Pattern   string
+	Namespace string
+}
+
+// LoadAll type-checks every declared package.
+//
+// Each is loaded by the existing single-package path and keeps its own type
+// mapper, so names stay per-package: two packages may both export a Config
+// without either having to be renamed.
+func LoadAll(opts Options, pkgs []Package) (*Bundle, error) {
+	if len(pkgs) == 0 {
+		return nil, fmt.Errorf("no packages to scan")
+	}
+	b := &Bundle{}
+	for _, p := range pkgs {
+		o := opts
+		o.Pattern = p.Pattern
+		mod, err := Load(o)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", p.Pattern, err)
+		}
+		// A lone package keeps the flat API, so it carries no namespace.
+		if len(pkgs) > 1 {
+			mod.Namespace = p.Namespace
+		}
+		b.Modules = append(b.Modules, mod)
+	}
+	return b, nil
+}
+
 // Load type-checks the package and builds the IR.
 func Load(opts Options) (*Module, error) {
 	pkg, err := loadPackage(opts.Dir, opts.Pattern, false)

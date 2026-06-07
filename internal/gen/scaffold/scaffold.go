@@ -26,8 +26,8 @@ type File struct {
 }
 
 // Generate renders every scaffold file.
-func Generate(cfg *config.Config, mod *scan.Module) ([]File, error) {
-	pkgJSON, err := packageJSON(cfg)
+func Generate(cfg *config.Config, b *scan.Bundle) ([]File, error) {
+	pkgJSON, err := packageJSON(cfg, b)
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +49,7 @@ func Generate(cfg *config.Config, mod *scan.Module) ([]File, error) {
 		files = append(files, File{Path: s.path, Content: b})
 	}
 
-	readme, err := render("README.md.tmpl", readmeData(cfg, mod))
+	readme, err := render("README.md.tmpl", readmeData(cfg, b))
 	if err != nil {
 		return nil, err
 	}
@@ -118,27 +118,63 @@ type manifest struct {
 	DevDeps     map[string]string `json:"devDependencies"`
 }
 
-func packageJSON(cfg *config.Config) ([]byte, error) {
-	node := &conditions{Types: "./dist/index.node.d.ts", Default: "./dist/index.node.js"}
-	browser := &conditions{Types: "./dist/index.browser.d.ts", Default: "./dist/index.browser.js"}
+// entryExport builds the conditions for one entry point, given the base name
+// its compiled files carry: "index" for the package root, or the namespace for
+// a subpath.
+func entryExport(cfg *config.Config, base string) (*rootExport, error) {
+	node := &conditions{
+		Types:   "./dist/" + base + ".node.d.ts",
+		Default: "./dist/" + base + ".node.js",
+	}
+	browser := &conditions{
+		Types:   "./dist/" + base + ".browser.d.ts",
+		Default: "./dist/" + base + ".browser.js",
+	}
 
-	root := &rootExport{}
+	e := &rootExport{}
 	if hasTarget(cfg.Targets, "node") {
-		root.Node = node
+		e.Node = node
 	}
 	if hasTarget(cfg.Targets, "browser") {
-		root.Browser = browser
+		e.Browser = browser
 	}
 	// The default condition must always resolve to something. Prefer the
 	// browser build when present, since bundlers that ignore "browser" still
 	// land somewhere that works.
 	switch {
-	case root.Browser != nil:
-		root.Default = browser
-	case root.Node != nil:
-		root.Default = node
+	case e.Browser != nil:
+		e.Default = browser
+	case e.Node != nil:
+		e.Default = node
 	default:
 		return nil, fmt.Errorf("no targets configured")
+	}
+	return e, nil
+}
+
+func packageJSON(cfg *config.Config, b *scan.Bundle) ([]byte, error) {
+	root, err := entryExport(cfg, "index")
+	if err != nil {
+		return nil, err
+	}
+
+	exports := map[string]any{
+		".":              root,
+		"./main.wasm":    "./dist/main.wasm",
+		"./package.json": "./package.json",
+	}
+	// Each namespace is also a subpath, so a consumer who wants one package can
+	// import it alone and leave the rest out of their bundle. The same module
+	// backs both forms, so there is nothing to keep in sync.
+	for _, mod := range b.Modules {
+		if mod.Namespace == "" {
+			continue
+		}
+		e, err := entryExport(cfg, mod.Namespace)
+		if err != nil {
+			return nil, err
+		}
+		exports["./"+mod.Namespace] = e
 	}
 
 	m := manifest{
@@ -148,11 +184,7 @@ func packageJSON(cfg *config.Config) ([]byte, error) {
 		License:     cfg.NPM.License,
 		Author:      cfg.NPM.Author,
 		Type:        "module",
-		Exports: map[string]any{
-			".":              root,
-			"./main.wasm":    "./dist/main.wasm",
-			"./package.json": "./package.json",
-		},
+		Exports:     exports,
 		// Publishing dist/ alone is what frees consumers from needing Go: the
 		// compiled module and the runtime bridge are both inside it.
 		Files:       []string{"dist"},
@@ -193,39 +225,67 @@ func normalizeRepo(s string) string {
 
 // --- README ---
 
-func readmeData(cfg *config.Config, mod *scan.Module) map[string]any {
-	type fnView struct {
-		JSName   string
-		TSParams string
-		TSReturn string
-		Doc      string
-	}
-	var funcs []fnView
-	for _, f := range mod.Funcs {
-		var params []string
-		for _, p := range f.Params {
-			params = append(params, p.JSName+": "+p.TS)
+type fnView struct {
+	JSName   string
+	TSParams string
+	TSReturn string
+	Doc      string
+}
+
+// nsView is one package's section of the README.
+type nsView struct {
+	NS      string
+	PkgPath string
+	Funcs   []fnView
+}
+
+func readmeData(cfg *config.Config, b *scan.Bundle) map[string]any {
+	views := make([]nsView, 0, len(b.Modules))
+	paths := make([]string, 0, len(b.Modules))
+	for _, mod := range b.Modules {
+		v := nsView{NS: mod.Namespace, PkgPath: mod.PkgPath}
+		for _, f := range mod.Funcs {
+			var params []string
+			for _, p := range f.Params {
+				params = append(params, p.JSName+": "+p.TS)
+			}
+			v.Funcs = append(v.Funcs, fnView{
+				JSName:   f.JSName,
+				TSParams: strings.Join(params, ", "),
+				TSReturn: f.TSReturn(),
+				Doc:      firstSentence(f.Doc),
+			})
 		}
-		funcs = append(funcs, fnView{
-			JSName:   f.JSName,
-			TSParams: strings.Join(params, ", "),
-			TSReturn: f.TSReturn(),
-			Doc:      firstSentence(f.Doc),
-		})
+		views = append(views, v)
+		paths = append(paths, mod.PkgPath)
 	}
 
-	first, args := "", ""
-	if len(mod.Funcs) > 0 {
-		first = mod.Funcs[0].JSName
-		args = exampleArgs(mod.Funcs[0])
+	// The opening snippet uses the first function of the first package, since a
+	// snippet nobody can run is worse than none.
+	first, args, ns := "", "", ""
+	if mods := b.Modules; len(mods) > 0 && len(mods[0].Funcs) > 0 {
+		first = mods[0].Funcs[0].JSName
+		args = exampleArgs(mods[0].Funcs[0])
+		ns = mods[0].Namespace
+	}
+	// Namespaced exports are called through the namespace: lib.extract(…).
+	call := first
+	imported := first
+	if ns != "" {
+		call = ns + "." + first
+		imported = ns
 	}
 
 	return map[string]any{
 		"Name":        cfg.NPM.Name,
 		"Description": cfg.NPM.Description,
-		"PkgPath":     mod.PkgPath,
-		"Funcs":       funcs,
+		"PkgPath":     strings.Join(paths, "`, `"),
+		"Multi":       b.Multi(),
+		"Namespaces":  views,
 		"FirstFunc":   first,
+		"FirstNS":     ns,
+		"FirstCall":   call,
+		"FirstImport": imported,
 		"FirstArgs":   args,
 	}
 }

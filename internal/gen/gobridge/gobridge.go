@@ -30,8 +30,11 @@ type importSpec struct {
 }
 
 type fn struct {
-	GoName  string
-	JSName  string
+	GoName string
+	JSName string
+	// Wire is the name the function is registered under: namespaced by package
+	// when the project exposes more than one.
+	Wire    string
 	Doc     string
 	Arity   int
 	Decodes []string
@@ -44,17 +47,32 @@ type data struct {
 	Funcs     []fn
 }
 
-// Generate renders the bridge source for mod.
-func Generate(mod *scan.Module, namespace string) ([]byte, error) {
-	imp := newImports(mod.PkgPath)
+// Generate renders the bridge source for every package in the bundle.
+//
+// One wasm module serves them all: splitting per package would multiply a
+// multi-megabyte module by the number of packages, and the Go runtime inside it
+// is the bulk of that weight either way.
+func Generate(b *scan.Bundle, namespace string) ([]byte, error) {
+	imp := newImports()
 	d := data{Namespace: namespace}
 
-	for _, f := range mod.Funcs {
-		g, err := renderFunc(f, imp)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %s: %w", f.Pos, f.GoName, err)
+	// Every exposed package is registered before anything is rendered: one of
+	// them may return a type declared in another, and the qualifier has to know
+	// the alias by the time it sees that type rather than after.
+	aliases := make([]string, len(b.Modules))
+	for i, mod := range b.Modules {
+		aliases[i] = imp.user(mod)
+	}
+
+	for i, mod := range b.Modules {
+		alias := aliases[i]
+		for _, f := range mod.Funcs {
+			g, err := renderFunc(f, mod.Wire(f), alias, imp)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %s: %w", f.Pos, f.GoName, err)
+			}
+			d.Funcs = append(d.Funcs, g)
 		}
-		d.Funcs = append(d.Funcs, g)
 	}
 	d.Imports = imp.specs()
 
@@ -76,10 +94,11 @@ func Generate(mod *scan.Module, namespace string) ([]byte, error) {
 	return src, nil
 }
 
-func renderFunc(f scan.Func, imp *imports) (fn, error) {
+func renderFunc(f scan.Func, wire, alias string, imp *imports) (fn, error) {
 	g := fn{
 		GoName: f.GoName,
 		JSName: f.JSName,
+		Wire:   wire,
 		Doc:    firstLine(f.Doc),
 		Arity:  len(f.Params),
 	}
@@ -106,8 +125,7 @@ func renderFunc(f scan.Func, imp *imports) (fn, error) {
 		args = append(args, arg)
 	}
 
-	imp.addAlias("userpkg", imp.userPath)
-	call := fmt.Sprintf("userpkg.%s(%s)", f.GoName, strings.Join(args, ", "))
+	call := fmt.Sprintf("%s.%s(%s)", alias, f.GoName, strings.Join(args, ", "))
 
 	nres := len(f.Results)
 	switch {
@@ -160,17 +178,33 @@ func renderFunc(f scan.Func, imp *imports) (fn, error) {
 // --- import bookkeeping ---
 
 type imports struct {
-	userPath string
-	byPath   map[string]string // path -> alias ("" means use the package name)
+	// userAliases maps each exposed package path to the alias it is imported
+	// under, so a type in one package and a type in another never collide.
+	userAliases map[string]string
+	byPath      map[string]string // path -> alias ("" means use the package name)
 }
 
-func newImports(userPath string) *imports {
-	i := &imports{userPath: userPath, byPath: map[string]string{}}
+func newImports() *imports {
+	i := &imports{userAliases: map[string]string{}, byPath: map[string]string{}}
 	// Always needed by the emitted code.
 	i.add("encoding/json")
 	i.add("fmt")
 	i.add("os")
 	return i
+}
+
+// user registers an exposed package and returns its alias.
+//
+// A lone package keeps the name userpkg it has always had, so single-package
+// output is byte-for-byte what it was.
+func (i *imports) user(mod *scan.Module) string {
+	alias := "userpkg"
+	if mod.Namespace != "" {
+		alias = "pkg_" + mod.Namespace
+	}
+	i.userAliases[mod.PkgPath] = alias
+	i.addAlias(alias, mod.PkgPath)
+	return alias
 }
 
 func (i *imports) add(path string)             { i.addAlias("", path) }
@@ -182,9 +216,9 @@ func (i *imports) qualifier(p *types.Package) string {
 	if p == nil {
 		return ""
 	}
-	if p.Path() == i.userPath {
-		i.addAlias("userpkg", p.Path())
-		return "userpkg"
+	if alias, exposed := i.userAliases[p.Path()]; exposed {
+		i.addAlias(alias, p.Path())
+		return alias
 	}
 	i.add(p.Path())
 	return p.Name()

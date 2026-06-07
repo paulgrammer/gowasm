@@ -4,8 +4,24 @@ package scan
 
 import "go/types"
 
+// Bundle is every package a project exposes, in the order they were declared.
+//
+// One package is the common case and keeps the flat API: a Bundle of one
+// generates exactly what a single package always generated.
+type Bundle struct {
+	Modules []*Module
+}
+
+// Multi reports whether exports are namespaced by package.
+func (b *Bundle) Multi() bool { return len(b.Modules) > 1 }
+
 // Module is everything the generators need about one Go package.
 type Module struct {
+	// Namespace is the TypeScript name this package's exports live under, and
+	// the prefix its registrations carry across the boundary. It is empty for
+	// the flat, single-package case.
+	Namespace string
+
 	PkgPath string
 	PkgName string
 	Funcs   []Func
@@ -96,6 +112,15 @@ type Alias struct {
 	Name string
 	Doc  string
 	TS   string
+}
+
+// Wire is the name a function is registered under on the JavaScript side.
+// Namespacing keeps two packages that both export New from colliding.
+func (m *Module) Wire(f Func) string {
+	if m.Namespace == "" {
+		return f.JSName
+	}
+	return m.Namespace + "." + f.JSName
 }
 
 // TSReturn renders the promise payload for a function: void, a single type, or

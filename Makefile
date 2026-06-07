@@ -9,7 +9,7 @@ DIST     := dist
 ARCHIVES := dist/archives
 EXAMPLES := urls blob worker-pool ginapi pdf \
             regex money gofmt chip8 chess sanitize expr text \
-            highlight excel cue git image qr
+            highlight excel cue git image qr multi
 GOROOT_  := $(shell $(GO) env GOROOT)
 JS_EXEC  := $(GOROOT_)/lib/wasm/go_js_wasm_exec
 

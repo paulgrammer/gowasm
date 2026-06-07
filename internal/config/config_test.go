@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -65,8 +66,11 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Package != "." || cfg.Out != "./node" {
-		t.Errorf("paths = %q %q, want . and ./node", cfg.Package, cfg.Out)
+	if got := cfg.PackagePaths(); len(got) != 1 || got[0] != "." || cfg.Out != "./node" {
+		t.Errorf("paths = %q %q, want [.] and ./node", got, cfg.Out)
+	}
+	if cfg.Multi() {
+		t.Error("one package must keep the flat API")
 	}
 	if cfg.NPM.Version != "0.1.0" {
 		t.Errorf("version = %q, want 0.1.0", cfg.NPM.Version)
@@ -81,10 +85,16 @@ func TestLoadAppliesDefaults(t *testing.T) {
 
 func TestLoadRejectsBadConfig(t *testing.T) {
 	cases := map[string]string{
-		"missing name":   "package: .\n",
-		"bad target":     "npm:\n  name: x\ntargets: [node, deno]\n",
-		"bad int64 mode": "npm:\n  name: x\nint64: bigint\n",
-		"bad npm name":   "npm:\n  name: Bad Name\n",
+		"missing name":                                "packages: [.]\n",
+		"the removed singular key":                    "package: .\nnpm:\n  name: x\n",
+		"no packages at all":                          "packages: []\nnpm:\n  name: x\n",
+		"an entry with no path":                       "packages:\n  - as: lib\nnpm:\n  name: x\n",
+		"two packages, one namespace":                 "packages: [./a/lib, ./b/lib]\nnpm:\n  name: x\n",
+		"a namespace that is a reserved word":         "packages:\n  - path: ./a\n    as: new\nnpm:\n  name: x\n",
+		"a namespace the entry point already exports": "packages:\n  - path: ./a\n    as: createClient\n  - ./b\nnpm:\n  name: x\n",
+		"bad target":                                  "npm:\n  name: x\ntargets: [node, deno]\n",
+		"bad int64 mode":                              "npm:\n  name: x\nint64: bigint\n",
+		"bad npm name":                                "npm:\n  name: Bad Name\n",
 	}
 	for why, body := range cases {
 		dir := t.TempDir()
@@ -92,6 +102,91 @@ func TestLoadRejectsBadConfig(t *testing.T) {
 		if _, err := Load(dir); err == nil {
 			t.Errorf("%s: expected an error", why)
 		}
+	}
+}
+
+// The two spellings of an entry have to mean the same thing, or the short form
+// is a trap rather than a convenience.
+func TestPackagesAcceptBothForms(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, FileName), "packages:\n  - ./pkg/lib\n  - path: ./internal/api\n    as: admin\nnpm:\n  name: x\n")
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Multi() {
+		t.Error("two packages must namespace their exports")
+	}
+	want := []struct{ path, ns string }{
+		{"./pkg/lib", "lib"},
+		{"./internal/api", "admin"},
+	}
+	for i, w := range want {
+		got := cfg.Packages[i]
+		if got.Path != w.path || got.Namespace() != w.ns {
+			t.Errorf("packages[%d] = %q as %q, want %q as %q", i, got.Path, got.Namespace(), w.path, w.ns)
+		}
+	}
+}
+
+// An old config must fail loudly. Removing the field alone would make YAML
+// ignore the key, and the build would generate nothing and say nothing.
+func TestTheRemovedPackageKeyExplainsItself(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, FileName), "package: ./urls\nnpm:\n  name: x\n")
+
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("an old config should not load")
+	}
+	if !strings.Contains(err.Error(), "packages:") {
+		t.Errorf("the error should name the replacement, got: %v", err)
+	}
+}
+
+// A path with punctuation in it still has to yield a legal TypeScript name.
+func TestNamespacesAreDerivedFromTheDirectory(t *testing.T) {
+	cases := map[string]string{
+		"./pkg/lib":     "lib",
+		"./go-qrcode":   "goqrcode",
+		"./pkg/2fast":   "pkg2fast",
+		"internal/api/": "api",
+	}
+	for path, want := range cases {
+		c := &Config{Dir: "/tmp/project"}
+		c.SetPackages([]PackageSpec{{Path: path}})
+		if got := c.Packages[0].Namespace(); got != want {
+			t.Errorf("namespace of %q = %q, want %q", path, got, want)
+		}
+	}
+
+	// At the module root the directory name is what the project goes by.
+	c := &Config{Dir: "/tmp/my-project"}
+	c.SetPackages([]PackageSpec{{Path: "."}})
+	if got := c.Packages[0].Namespace(); got != "myproject" {
+		t.Errorf("namespace of . = %q, want myproject", got)
+	}
+}
+
+// A config written back out has to load again, or 'gowasm init' produces
+// something the next command rejects.
+func TestWrittenConfigRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	c := &Config{Dir: dir, Out: "./node", NPM: NPM{Name: "x", Version: "0.1.0"}, Targets: []string{"node"}}
+	c.SetPackages([]PackageSpec{{Path: "./a"}, {Path: "./b", As: "beta"}})
+	if _, err := c.Write(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	back, err := Load(dir)
+	if err != nil {
+		t.Fatalf("a config gowasm wrote does not load: %v", err)
+	}
+	if len(back.Packages) != 2 ||
+		back.Packages[0].Path != "./a" || back.Packages[0].Namespace() != "a" ||
+		back.Packages[1].Path != "./b" || back.Packages[1].Namespace() != "beta" {
+		t.Errorf("round trip lost the packages: %+v", back.Packages)
 	}
 }
 

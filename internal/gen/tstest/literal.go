@@ -25,6 +25,9 @@ type literalizer struct {
 	// casts records the enum names that needed casting, so they can be
 	// imported.
 	casts map[string]bool
+	// prefix qualifies a cast with its namespace, for a project whose types
+	// live under one rather than at the top level.
+	prefix string
 	// usesBytes records whether the helper needs emitting.
 	usesBytes bool
 }
@@ -126,7 +129,7 @@ func (l *literalizer) walk(t types.Type, v any) string {
 		rendered := l.walk(u.Underlying(), v)
 		if members, isEnum := l.enums[name]; isEnum && !members[rendered] {
 			l.casts[name] = true
-			return fmt.Sprintf("%s as %s", rendered, name)
+			return fmt.Sprintf("%s as %s%s", rendered, l.prefix, name)
 		}
 		return rendered
 

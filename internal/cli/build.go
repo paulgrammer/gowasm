@@ -49,7 +49,7 @@ func build(cfg *config.Config, env *goenv.Env, r *runner.Runner, out io.Writer, 
 	}
 	defer ov.Close()
 
-	fmt.Fprintf(out, "compiling %s -> %s\n", cfg.Package, rel(cfg.Dir, wasmPath))
+	fmt.Fprintf(out, "compiling %s -> %s\n", packageList(cfg), rel(cfg.Dir, wasmPath))
 	err = r.Run(cfg.Dir, []string{"GOOS=js", "GOARCH=wasm"},
 		"go", "build",
 		"-overlay", ov.Path,
@@ -90,6 +90,16 @@ func buildNPM(cfg *config.Config, r *runner.Runner, out io.Writer) error {
 
 	fmt.Fprintln(out, "compiling TypeScript")
 	return r.Run(outDir, nil, string(m), append(m.RunArgs("build"), m.Quiet()...)...)
+}
+
+// packageList names what is being compiled, so a multi-package build says which
+// packages went into the single module it produces.
+func packageList(cfg *config.Config) string {
+	paths := make([]string, 0, len(cfg.Packages))
+	for _, p := range cfg.Packages {
+		paths = append(paths, p.Path)
+	}
+	return strings.Join(paths, ", ")
 }
 
 func mustRel(base, path string) string {

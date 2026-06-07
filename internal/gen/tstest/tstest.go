@@ -62,6 +62,7 @@ func GenerateFixtures(mod *scan.Module, recorded []fixtures.Fixture) ([]File, er
 	if len(recorded) == 0 {
 		return nil, nil
 	}
+	sel, prefix := selector(mod)
 
 	params := map[string][]scan.Param{}
 	results := map[string][]scan.Result{}
@@ -72,6 +73,9 @@ func GenerateFixtures(mod *scan.Module, recorded []fixtures.Fixture) ([]File, er
 		variadic[f.JSName] = f.Variadic
 	}
 	lit := newLiteralizer(mod)
+	if mod.Namespace != "" {
+		lit.prefix = mod.Namespace + "."
+	}
 	seen := map[string]int{}
 	views := make([]Fixture, 0, len(recorded))
 	for _, f := range recorded {
@@ -107,15 +111,25 @@ func GenerateFixtures(mod *scan.Module, recorded []fixtures.Fixture) ([]File, er
 	}
 	sort.Strings(imports)
 
-	b, err := render("fixtures.ts.tmpl", map[string]any{
-		"Fixtures":    views,
-		"TypeImports": imports,
-		"UsesBytes":   lit.usesBytes,
-	})
+	data := map[string]any{
+		"Fixtures":  views,
+		"UsesBytes": lit.usesBytes,
+		"Sel":       sel,
+		"NS":        mod.Namespace,
+	}
+	// A namespaced type is not a top-level export of the entry point, so it is
+	// imported from its own namespace module instead.
+	if mod.Namespace == "" {
+		data["TypeImports"] = imports
+	} else {
+		data["NSImport"] = len(imports) > 0
+	}
+
+	b, err := render("fixtures.ts.tmpl", data)
 	if err != nil {
 		return nil, err
 	}
-	return []File{{Path: "fixtures.gen.test.ts", Content: b}}, nil
+	return []File{{Path: prefix + "fixtures.gen.test.ts", Content: b}}, nil
 }
 
 // renderArgs writes the recorded arguments as TypeScript, casting any value
@@ -173,8 +187,48 @@ func countCalls(all []fixtures.Fixture, example string) int {
 	return n
 }
 
-// Generate renders the test suites for mod.
-func Generate(mod *scan.Module, targets []string) ([]File, error) {
+// selector reports how a module's functions are reached on a Client, and the
+// prefix its test files carry. Both are empty for the flat, single-package
+// case, so its output is exactly what it always was.
+func selector(mod *scan.Module) (sel, prefix string) {
+	if mod.Namespace == "" {
+		return "", ""
+	}
+	return "." + mod.Namespace, mod.Namespace + "."
+}
+
+// Generate renders the test suites for every package in the bundle.
+//
+// The contract suite is per package, so a failure names the package it came
+// from. The browser suite proves the entry point boots, which is one fact
+// however many packages are behind it, so there is only ever one of those.
+func Generate(b *scan.Bundle, targets []string) ([]File, error) {
+	var files []File
+	for i, mod := range b.Modules {
+		data, err := viewData(mod)
+		if err != nil {
+			return nil, err
+		}
+		if hasTarget(targets, "node") {
+			out, err := render("contract.ts.tmpl", data)
+			if err != nil {
+				return nil, err
+			}
+			_, prefix := selector(mod)
+			files = append(files, File{Path: prefix + "contract.gen.test.ts", Content: out})
+		}
+		if i == 0 && hasTarget(targets, "browser") {
+			out, err := render("browser.ts.tmpl", data)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, File{Path: "browser-loader.gen.test.ts", Content: out})
+		}
+	}
+	return files, nil
+}
+
+func viewData(mod *scan.Module) (map[string]any, error) {
 	if len(mod.Funcs) == 0 {
 		return nil, fmt.Errorf("no functions to test")
 	}
@@ -183,7 +237,13 @@ func Generate(mod *scan.Module, targets []string) ([]File, error) {
 	for _, f := range mod.Funcs {
 		views = append(views, buildView(f))
 	}
-	data := map[string]any{"Funcs": views, "First": views[0]}
+	sel, prefix := selector(mod)
+	data := map[string]any{
+		"Funcs":  views,
+		"First":  views[0],
+		"Sel":    sel,
+		"Prefix": prefix,
+	}
 	// The rejection half of the concurrency test needs a function that actually
 	// requires an argument; a package of niladic functions simply skips it.
 	for _, v := range views {
@@ -192,23 +252,7 @@ func Generate(mod *scan.Module, targets []string) ([]File, error) {
 			break
 		}
 	}
-
-	var files []File
-	if hasTarget(targets, "node") {
-		b, err := render("contract.ts.tmpl", data)
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, File{Path: "contract.gen.test.ts", Content: b})
-	}
-	if hasTarget(targets, "browser") {
-		b, err := render("browser.ts.tmpl", data)
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, File{Path: "browser-loader.gen.test.ts", Content: b})
-	}
-	return files, nil
+	return data, nil
 }
 
 func buildView(f scan.Func) fnView {

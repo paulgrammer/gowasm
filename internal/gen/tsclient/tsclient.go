@@ -30,27 +30,45 @@ type File struct {
 type Options struct {
 	// Namespace prefixes the globals each instance installs itself under.
 	Namespace string
+	// Package is the published npm name, used only in the doc comments that
+	// show how to import each namespace.
+	Package string
 	// Targets selects which entry points to emit: "node", "browser", or both.
 	Targets []string
 }
 
 // ReservedNames lists the exported functions whose JavaScript name cannot be a
 // bare named export, so callers can be told rather than left to wonder.
-func ReservedNames(mod *scan.Module) []string {
+func ReservedNames(b *scan.Bundle) []string {
 	var out []string
-	for _, f := range mod.Funcs {
-		if reservedJS[f.JSName] {
-			out = append(out, f.GoName+" -> "+f.JSName)
+	for _, mod := range b.Modules {
+		for _, f := range mod.Funcs {
+			if tsmap.ReservedJS[f.JSName] {
+				out = append(out, f.GoName+" -> "+mod.Wire(f))
+			}
 		}
 	}
 	sort.Strings(out)
 	return out
 }
 
-// Generate renders every TypeScript file for mod.
-func Generate(mod *scan.Module, opts Options) ([]File, error) {
-	api := apiName(mod.PkgName)
+// nsView is one package's place in the generated package, shared by the entry
+// point and the namespace modules.
+type nsView struct {
+	NS      string
+	PkgName string
+	APIName string
+	First   string
+	Funcs   []tsFunc
+}
 
+// Generate renders every TypeScript file for the bundle.
+//
+// One package produces the flat layout it always has: generated/types.ts,
+// generated/client.ts and an entry point exporting the functions directly.
+// Several produce one directory and one namespace module each, re-exported
+// from the entry point and reachable as subpaths.
+func Generate(b *scan.Bundle, opts Options) ([]File, error) {
 	files := []File{}
 
 	// Static runtime pieces: identical for every package.
@@ -58,63 +76,125 @@ func Generate(mod *scan.Module, opts Options) ([]File, error) {
 		{"core.ts.tmpl", "runtime/core.ts"},
 		{"wasm_exec.d.ts.tmpl", "vendor/wasm_exec.d.ts"},
 	} {
-		b, err := render(s.tmpl, nil)
+		content, err := render(s.tmpl, nil)
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: s.path, Content: b})
+		files = append(files, File{Path: s.path, Content: content})
 	}
 
-	types, err := render("types.ts.tmpl", mod)
-	if err != nil {
-		return nil, err
-	}
-	files = append(files, File{Path: "generated/types.ts", Content: types})
+	multi := b.Multi()
+	views := make([]nsView, 0, len(b.Modules))
 
-	cdc := newCodec(mod)
-	useCodec := cdc.Needed(mod)
-	funcs := renderFuncs(mod, cdc)
-	if useCodec {
-		views, usesMapValues := buildCodecViews(cdc, mod)
-		b, err := render("codec.ts.tmpl", map[string]any{
-			"Structs":       views,
-			"UsesMapValues": usesMapValues,
+	for _, mod := range b.Modules {
+		// The flat layout keeps generated/ directly; a namespaced one gives each
+		// package its own directory beneath it.
+		dir, coreDir := "generated", ".."
+		if multi {
+			dir, coreDir = "generated/"+mod.Namespace, "../.."
+		}
+
+		types, err := render("types.ts.tmpl", mod)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, File{Path: dir + "/types.ts", Content: types})
+
+		cdc := newCodec(mod)
+		useCodec := cdc.Needed(mod)
+		funcs := renderFuncs(mod, cdc)
+		if useCodec {
+			codecViews, usesMapValues := buildCodecViews(cdc, mod)
+			content, err := render("codec.ts.tmpl", map[string]any{
+				"Structs":       codecViews,
+				"UsesMapValues": usesMapValues,
+			})
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, File{Path: dir + "/codec.ts", Content: content})
+		}
+
+		api := apiName(mod)
+		client, err := render("client.ts.tmpl", map[string]any{
+			"PkgName":      mod.PkgName,
+			"APIName":      api,
+			"CoreDir":      coreDir + "/runtime",
+			"Funcs":        funcs,
+			"TypeImports":  typeImports(mod, funcs),
+			"CodecImports": codecImports(cdc, mod, useCodec),
 		})
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: "generated/codec.ts", Content: b})
-	}
+		files = append(files, File{Path: dir + "/client.ts", Content: client})
 
-	client, err := render("client.ts.tmpl", map[string]any{
-		"PkgName":      mod.PkgName,
-		"APIName":      api,
-		"Funcs":        funcs,
-		"TypeImports":  typeImports(mod, funcs),
-		"CodecImports": codecImports(cdc, mod, useCodec),
-	})
-	if err != nil {
-		return nil, err
+		v := nsView{NS: mod.Namespace, PkgName: mod.PkgName, APIName: api, Funcs: funcs}
+		if len(funcs) > 0 {
+			v.First = funcs[0].JSName
+		}
+		views = append(views, v)
 	}
-	files = append(files, File{Path: "generated/client.ts", Content: client})
 
 	for _, target := range opts.Targets {
 		loaderTmpl, loaderFile, loaderFn, err := loaderFor(target)
 		if err != nil {
 			return nil, err
 		}
-		b, err := render(loaderTmpl, nil)
+		content, err := render(loaderTmpl, nil)
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: "runtime/" + loaderFile + ".ts", Content: b})
+		files = append(files, File{Path: "runtime/" + loaderFile + ".ts", Content: content})
 
-		entry, err := render("index.ts.tmpl", map[string]any{
-			"APIName":    api,
-			"Funcs":      funcs,
+		if !multi {
+			entry, err := render("index.ts.tmpl", map[string]any{
+				"APIName":    views[0].APIName,
+				"Funcs":      views[0].Funcs,
+				"Namespace":  opts.Namespace,
+				"LoaderFn":   loaderFn,
+				"LoaderFile": loaderFile,
+			})
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, File{Path: "index." + target + ".ts", Content: entry})
+			continue
+		}
+
+		// The shared instance moves into its own module once there are several
+		// namespaces, because all of them have to reach the same one.
+		instance, err := render("instance.ts.tmpl", map[string]any{
 			"Namespace":  opts.Namespace,
 			"LoaderFn":   loaderFn,
 			"LoaderFile": loaderFile,
+		})
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, File{Path: "runtime/instance." + target + ".ts", Content: instance})
+
+		for _, v := range views {
+			nsFile, err := render("namespace.ts.tmpl", map[string]any{
+				"NS":      v.NS,
+				"PkgName": v.PkgName,
+				"APIName": v.APIName,
+				"First":   v.First,
+				"Funcs":   v.Funcs,
+				"Package": opts.Package,
+				"Target":  target,
+			})
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, File{Path: v.NS + "." + target + ".ts", Content: nsFile})
+		}
+
+		entry, err := render("index.multi.ts.tmpl", map[string]any{
+			"Namespaces": views,
+			"First":      views[0],
+			"Package":    opts.Package,
+			"Target":     target,
 		})
 		if err != nil {
 			return nil, err
@@ -137,32 +217,12 @@ func loaderFor(target string) (tmpl, file, fn string, err error) {
 	}
 }
 
-// reservedJS lists the words that cannot be a variable declaration name in a
-// JavaScript module. Most are reserved words; eval and arguments are not, but
-// are equally restricted under strict mode, which modules always are.
-//
-// All of them are legal as object properties, so a function named New or Eval
-// still works on the client object. Only the bare named export is impossible,
-// and both are far too common as Go names to reject outright.
-var reservedJS = map[string]bool{
-	"await": true, "break": true, "case": true, "catch": true, "class": true,
-	"const": true, "continue": true, "debugger": true, "default": true,
-	"delete": true, "do": true, "else": true, "enum": true, "export": true,
-	"extends": true, "false": true, "finally": true, "for": true,
-	"function": true, "if": true, "implements": true, "import": true,
-	"in": true, "instanceof": true, "interface": true, "let": true,
-	"new": true, "null": true, "package": true, "private": true,
-	"protected": true, "public": true, "return": true, "static": true,
-	"super": true, "switch": true, "this": true, "throw": true, "true": true,
-	"try": true, "typeof": true, "var": true, "void": true, "while": true,
-	"with": true, "yield": true,
-	// Not reserved words, but binding either is a strict mode error.
-	"eval": true, "arguments": true,
-}
-
 // tsFunc is the per-function view the templates render.
 type tsFunc struct {
-	JSName     string
+	JSName string
+	// Wire is the name this function is registered under across the boundary,
+	// namespaced by package when the project exposes more than one.
+	Wire       string
 	Doc        string
 	TSParams   string // "text: string, mode: Strictness"
 	TSReturn   string
@@ -199,7 +259,8 @@ func renderFuncs(mod *scan.Module, cdc *codec) []tsFunc {
 
 		fn := tsFunc{
 			JSName:     f.JSName,
-			Reserved:   reservedJS[f.JSName],
+			Wire:       mod.Wire(f),
+			Reserved:   tsmap.ReservedJS[f.JSName],
 			Key:        memberKey(f.JSName),
 			Doc:        f.Doc,
 			TSParams:   strings.Join(params, ", "),
@@ -211,7 +272,7 @@ func renderFuncs(mod *scan.Module, cdc *codec) []tsFunc {
 		// A result carrying binary data is converted around the awaited call, so
 		// the caller never sees the base64 the wire format uses.
 		if len(f.Results) == 1 {
-			call := fmt.Sprintf("(await rt.call<any>(%q, [%s]))", f.JSName, fn.CallArgs)
+			call := fmt.Sprintf("(await rt.call<any>(%q, [%s]))", fn.Wire, fn.CallArgs)
 			if decoded := cdc.decode(f.Results[0].Type, call); decoded != call {
 				fn.Decode = decoded
 			}
@@ -223,7 +284,7 @@ func renderFuncs(mod *scan.Module, cdc *codec) []tsFunc {
 
 // memberKey quotes a member name when it is a reserved word.
 func memberKey(name string) string {
-	if reservedJS[name] {
+	if tsmap.ReservedJS[name] {
 		return strconv.Quote(name)
 	}
 	return name
@@ -310,19 +371,51 @@ var identRe = regexp.MustCompile(`[A-Za-z_$][A-Za-z0-9_$]*`)
 func identifiers(s string) []string { return identRe.FindAllString(s, -1) }
 
 // apiName turns a Go package name into the exported interface name: urls -> Urls.
-func apiName(pkg string) string {
+//
+// The package's own types are exported from the same module, so a package named
+// store that also declares a type Store would declare that name twice and fail
+// to compile. The generated interface is the one that yields, since renaming it
+// costs nothing while renaming the user's type is not ours to do.
+func apiName(mod *scan.Module) string {
 	cleaned := strings.Map(func(r rune) rune {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			return r
 		}
 		return -1
-	}, pkg)
-	if cleaned == "" {
-		return "API"
+	}, mod.PkgName)
+	base := "API"
+	if cleaned != "" {
+		r := []rune(cleaned)
+		r[0] = unicode.ToUpper(r[0])
+		base = string(r)
 	}
-	r := []rune(cleaned)
-	r[0] = unicode.ToUpper(r[0])
-	return string(r)
+
+	taken := map[string]bool{}
+	for _, s := range mod.Structs {
+		taken[s.Name] = true
+	}
+	for _, e := range mod.Enums {
+		taken[e.Name] = true
+	}
+	for _, a := range mod.Aliases {
+		taken[a.Name] = true
+	}
+	if mod.UsesISODateTime {
+		taken[tsmap.ISODateTime] = true
+	}
+
+	if !taken[base] {
+		return base
+	}
+	if !taken[base+"API"] {
+		return base + "API"
+	}
+	for n := 2; ; n++ {
+		candidate := fmt.Sprintf("%sAPI%d", base, n)
+		if !taken[candidate] {
+			return candidate
+		}
+	}
 }
 
 func render(name string, data any) ([]byte, error) {

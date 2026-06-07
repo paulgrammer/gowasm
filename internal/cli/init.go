@@ -50,17 +50,21 @@ func initCmd(dir string, yes bool, out io.Writer) error {
 	if cfg.NPM.Description, err = p.Ask("description:", cfg.NPM.Description); err != nil {
 		return err
 	}
-	if cfg.Package, err = p.AskValid("go package:", cfg.Package, validatePackageDir(abs)); err != nil {
+	// Several packages are given as a list, and each becomes its own namespace
+	// in the generated TypeScript.
+	answer, err := p.AskValid("go packages:", strings.Join(cfg.PackagePaths(), ","), validatePackageDirs(abs))
+	if err != nil {
 		return err
 	}
+	cfg.SetPackages(packageSpecs(splitList(answer)))
 	// Said here rather than after writing, so the offer is visible before the
 	// confirmation rather than as a surprise afterwards.
-	pkgDir := cfg.Package
-	if !filepath.IsAbs(pkgDir) {
-		pkgDir = filepath.Join(abs, pkgDir)
-	}
-	if !hasGoFiles(pkgDir) {
+	if len(cfg.Packages) == 1 && !hasGoFiles(resolve(abs, cfg.Packages[0].Path)) {
 		p.Printf("  no Go files there yet, so a starter package will be written\n")
+	}
+	if len(cfg.Packages) > 1 {
+		p.Printf("  %d packages, so their exports will be namespaced: %s\n",
+			len(cfg.Packages), strings.Join(namespacesOf(cfg), ", "))
 	}
 	if cfg.Out, err = p.Ask("output directory:", cfg.Out); err != nil {
 		return err
@@ -111,13 +115,18 @@ func initCmd(dir string, yes bool, out io.Writer) error {
 	fmt.Fprintf(out, "\nwrote %s\n", rel(abs, path))
 
 	// A new project has a module but no code, so gowasm build would fail on a
-	// package with nothing in it. Give it something that works.
-	wrote, err := writeStarter(abs, cfg.Package, modulePath(abs))
-	if err != nil {
-		return err
-	}
-	if wrote {
-		fmt.Fprintf(out, "wrote a starter package in %s\n", cfg.Package)
+	// package with nothing in it. Give it something that works. Several packages
+	// can only have come from directories that already hold Go files, so there
+	// is nothing to scaffold there.
+	if len(cfg.Packages) == 1 {
+		first := cfg.Packages[0].Path
+		wrote, err := writeStarter(abs, first, modulePath(abs))
+		if err != nil {
+			return err
+		}
+		if wrote {
+			fmt.Fprintf(out, "wrote a starter package in %s\n", first)
+		}
 	}
 
 	fmt.Fprintf(out, "\nNext:\n  gowasm build\n  gowasm test\n")
@@ -129,7 +138,6 @@ func initCmd(dir string, yes bool, out io.Writer) error {
 func defaults(dir string) *config.Config {
 	cfg := &config.Config{
 		Out:     "./node",
-		Package: ".",
 		Targets: []string{"node", "browser"},
 		// Detected from a lockfile if the project has one, so an existing
 		// choice is honoured rather than overridden.
@@ -157,17 +165,44 @@ func defaults(dir string) *config.Config {
 		cfg.NPM.Repository = normalizeOrigin(origin)
 	}
 
-	// When exactly one subdirectory holds Go files, it is almost certainly the
-	// package to expose.
-	if pkgs := goPackageDirs(dir); len(pkgs) == 1 {
-		cfg.Package = pkgs[0]
+	// Whatever already holds Go files is almost certainly what should be
+	// exposed. Several of them is not a problem to resolve -- each becomes its
+	// own namespace -- so all of them are offered.
+	found := goPackageDirs(dir)
+	if len(found) == 0 {
+		found = []string{"."}
 	}
+	cfg.SetPackages(packageSpecs(found))
 	return cfg
 }
 
+// packageSpecs turns a list of paths into specs.
+func packageSpecs(paths []string) []config.PackageSpec {
+	out := make([]config.PackageSpec, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, config.PackageSpec{Path: p})
+	}
+	return out
+}
+
+func namespacesOf(cfg *config.Config) []string {
+	out := make([]string, 0, len(cfg.Packages))
+	for _, p := range cfg.Packages {
+		out = append(out, p.Namespace())
+	}
+	return out
+}
+
+func resolve(base, p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(base, p)
+}
+
 func merge(cfg, prev *config.Config) {
-	if prev.Package != "" {
-		cfg.Package = prev.Package
+	if len(prev.Packages) > 0 {
+		cfg.SetPackages(prev.Packages)
 	}
 	if prev.Out != "" {
 		cfg.Out = prev.Out
@@ -223,34 +258,45 @@ func ensureGoModule(dir string, p *prompt.Prompter, out io.Writer) error {
 	return nil
 }
 
-// validatePackageDir accepts a directory that does not exist yet, or exists
-// with no Go files in it.
+// validatePackageDirs accepts a comma-separated list of directories, each of
+// which may not exist yet, or may exist with no Go files in it.
 //
 // Rejecting those was a dead end: in a new project the module has just been
 // created and there is no Go source anywhere, so every possible answer failed
 // validation and the question asked itself forever. A directory without Go
 // files is now a thing to fill in rather than a mistake.
-func validatePackageDir(base string) func(string) error {
-	return func(p string) error {
-		if p == "" {
+func validatePackageDirs(base string) func(string) error {
+	return func(answer string) error {
+		paths := splitList(answer)
+		if len(paths) == 0 {
 			return fmt.Errorf("required; use . for the current directory")
 		}
-		target := p
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(base, p)
-		}
-		info, err := os.Stat(target)
-		if os.IsNotExist(err) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("%s: %w", p, err)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("%s is not a directory", p)
+		seen := map[string]bool{}
+		for _, p := range paths {
+			if seen[p] {
+				return fmt.Errorf("%s is listed twice", p)
+			}
+			seen[p] = true
+			if err := validatePackageDir(base, p); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
+}
+
+func validatePackageDir(base, p string) error {
+	info, err := os.Stat(resolve(base, p))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", p, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", p)
+	}
+	return nil
 }
 
 // starter is the package written into an empty project, so that gowasm build
@@ -419,7 +465,10 @@ func validateTargets(s string) error {
 	return nil
 }
 
-func splitTargets(s string) []string {
+func splitTargets(s string) []string { return splitList(s) }
+
+// splitList reads a comma-separated answer, ignoring spacing and empties.
+func splitList(s string) []string {
 	var out []string
 	for _, part := range strings.Split(s, ",") {
 		if p := strings.TrimSpace(part); p != "" {

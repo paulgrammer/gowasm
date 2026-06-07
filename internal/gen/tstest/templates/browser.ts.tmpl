@@ -36,7 +36,7 @@ after(async () => {
 test("the browser entry boots from an HTTP response", async () => {
   const client = await createClient({ wasmUrl: `${base}/main.wasm` });
   try {
-    assert.equal(typeof client.{{.First.JSName}}, "function");
+    assert.equal(typeof client{{.Sel}}.{{.First.JSName}}, "function");
   } finally {
     await client.dispose();
   }
@@ -47,7 +47,7 @@ test("falls back to compile() when the MIME type is wrong", async () => {
   try {
     const client = await createClient({ wasmUrl: `${base}/main.wasm` });
     try {
-      assert.equal(typeof client.{{.First.JSName}}, "function");
+      assert.equal(typeof client{{.Sel}}.{{.First.JSName}}, "function");
     } finally {
       await client.dispose();
     }

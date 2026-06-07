@@ -20,7 +20,7 @@ import (
 
 // result reports what a generation pass produced.
 type result struct {
-	Module  *scan.Module
+	Bundle  *scan.Bundle
 	Written int
 	Same    int
 
@@ -40,11 +40,14 @@ type genOptions struct {
 // generate runs the whole codegen pipeline: scan the Go package, then emit the
 // Go bridge, the TypeScript package and its tests.
 func generate(cfg *config.Config, env *goenv.Env, out io.Writer, opts genOptions) (*result, error) {
-	mod, err := scan.Load(scan.Options{
-		Dir:     cfg.Dir,
-		Pattern: cfg.Package,
-		Int64:   cfg.Int64Mode(),
-	})
+	pkgs := make([]scan.Package, 0, len(cfg.Packages))
+	for _, p := range cfg.Packages {
+		pkgs = append(pkgs, scan.Package{Pattern: p.Path, Namespace: p.Namespace()})
+	}
+	bundle, err := scan.LoadAll(scan.Options{
+		Dir:   cfg.Dir,
+		Int64: cfg.Int64Mode(),
+	}, pkgs)
 	if err != nil {
 		return nil, err
 	}
@@ -52,6 +55,11 @@ func generate(cfg *config.Config, env *goenv.Env, out io.Writer, opts genOptions
 	outDir := cfg.OutDir()
 	srcDir := filepath.Join(outDir, "src")
 	testDir := filepath.Join(outDir, "test")
+
+	// Whether the API is namespaced is read off the previous output before it
+	// is cleared. Crossing between the two forms rewrites every import line the
+	// published package's consumers wrote, which is worth saying out loud.
+	warnLayoutChange(bundle, srcDir, out)
 
 	// Clear the directories gowasm owns outright, so a renamed or deleted Go
 	// function cannot leave a stale file behind. Hand-written tests live in
@@ -62,7 +70,9 @@ func generate(cfg *config.Config, env *goenv.Env, out io.Writer, opts genOptions
 	if err := clearDir(filepath.Join(srcDir, "runtime")); err != nil {
 		return nil, err
 	}
-	if err := removeGlob(srcDir, "index.*.ts"); err != nil {
+	// Everything directly inside src/ is generated: the entry points and, when
+	// the API is namespaced, one module per namespace.
+	if err := removeGlob(srcDir, "*.ts"); err != nil {
 		return nil, err
 	}
 	if err := removeGlob(testDir, "*.gen.test.ts"); err != nil {
@@ -71,7 +81,7 @@ func generate(cfg *config.Config, env *goenv.Env, out io.Writer, opts genOptions
 
 	w := &writer{}
 
-	bridge, err := gobridge.Generate(mod, cfg.Namespace())
+	bridge, err := gobridge.Generate(bundle, cfg.Namespace())
 	if err != nil {
 		return nil, err
 	}
@@ -82,8 +92,9 @@ func generate(cfg *config.Config, env *goenv.Env, out io.Writer, opts genOptions
 		fmt.Fprintf(out, "wrote the Go bridge to %s\n", rel(cfg.Dir, opts.BridgeOut))
 	}
 
-	tsFiles, err := tsclient.Generate(mod, tsclient.Options{
+	tsFiles, err := tsclient.Generate(bundle, tsclient.Options{
 		Namespace: cfg.Namespace(),
+		Package:   cfg.NPM.Name,
 		Targets:   cfg.Targets,
 	})
 	if err != nil {
@@ -95,7 +106,7 @@ func generate(cfg *config.Config, env *goenv.Env, out io.Writer, opts genOptions
 		}
 	}
 
-	scaffoldFiles, err := scaffold.Generate(cfg, mod)
+	scaffoldFiles, err := scaffold.Generate(cfg, bundle)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +116,7 @@ func generate(cfg *config.Config, env *goenv.Env, out io.Writer, opts genOptions
 		}
 	}
 
-	testFiles, err := tstest.Generate(mod, cfg.Targets)
+	testFiles, err := tstest.Generate(bundle, cfg.Targets)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +126,7 @@ func generate(cfg *config.Config, env *goenv.Env, out io.Writer, opts genOptions
 		}
 	}
 
-	if err := writeFixtureTests(cfg, env, mod, testDir, w, out); err != nil {
+	if err := writeFixtureTests(cfg, env, bundle, testDir, w, out); err != nil {
 		return nil, err
 	}
 
@@ -127,68 +138,99 @@ func generate(cfg *config.Config, env *goenv.Env, out io.Writer, opts genOptions
 		return nil, err
 	}
 
-	for _, name := range tsclient.ReservedNames(mod) {
+	for _, name := range tsclient.ReservedNames(bundle) {
 		fmt.Fprintf(out, "  note: %s is a JavaScript reserved word, so it has no named export; "+
 			"reach it through createClient()\n", name)
 	}
 
 	fmt.Fprintf(out, "generated %d file(s) in %s\n", w.written+1, rel(cfg.Dir, outDir))
-	return &result{Module: mod, Written: w.written, Same: w.same, Bridge: bridge}, nil
+	return &result{Bundle: bundle, Written: w.written, Same: w.same, Bridge: bridge}, nil
 }
 
-// writeFixtureTests records the package's Go Example calls by running them, and
-// emits the behavioural suite. A package with no Examples simply gets none.
-func writeFixtureTests(cfg *config.Config, env *goenv.Env, mod *scan.Module, testDir string, w *writer, out io.Writer) error {
-	calls, skipped, err := scan.LoadExamples(scan.Options{
-		Dir:     cfg.Dir,
-		Pattern: cfg.Package,
-		Int64:   cfg.Int64Mode(),
-	}, mod)
-	if err != nil {
-		return err
+// warnLayoutChange reports a move between the flat and namespaced APIs.
+//
+// Adding a second package is not an additive change: `extract(…)` becomes
+// `lib.extract(…)` for everyone importing the published package. Silently
+// restructuring a published API is the worst thing this feature can do, so the
+// change is named rather than left to be discovered on the next install.
+func warnLayoutChange(b *scan.Bundle, srcDir string, out io.Writer) {
+	_, err := os.Stat(filepath.Join(srcDir, "generated", "types.ts"))
+	wasFlat := err == nil
+	if !wasFlat {
+		// Nothing generated yet, or already namespaced: neither is a change.
+		return
 	}
+	if !b.Multi() {
+		return
+	}
+	first := b.Modules[0]
+	fmt.Fprintf(out, "  note: a second package was added, so exports are now namespaced by package.\n")
+	if len(first.Funcs) > 0 {
+		fmt.Fprintf(out, "        %s(…) becomes %s.%s(…) for anyone importing this package.\n",
+			first.Funcs[0].JSName, first.Namespace, first.Funcs[0].JSName)
+	}
+}
 
-	// Calls the recorder cannot reproduce are named rather than dropped in
-	// silence, so it is always clear what is and is not covered.
-	for _, s := range skipped {
-		fmt.Fprintf(out, "  note: %s calls %s with %s; no fixture recorded (%s)\n",
-			s.Example, s.GoFunc, s.Reason, s.Pos)
-	}
-	if len(calls) == 0 {
-		return nil
-	}
-
-	recorded, err := fixtures.Record(cfg.Dir, env.JSExecWrapper(), mod, calls)
-	if err != nil {
-		return err
-	}
-
-	// A call whose result changes between runs cannot be asserted on. Naming it
-	// is more useful than emitting a test that fails at random.
-	kept := recorded[:0]
-	for _, f := range recorded {
-		if f.NonDeterministic {
-			fmt.Fprintf(out, "  note: %s calls %s, whose result differs between runs; no fixture recorded (%s)\n",
-				f.Example, f.JSFunc, f.Pos)
-			continue
-		}
-		kept = append(kept, f)
-	}
-	recorded = kept
-
-	files, err := tstest.GenerateFixtures(mod, recorded)
-	if err != nil {
-		return err
-	}
-	for _, f := range files {
-		if err := w.write(filepath.Join(testDir, f.Path), f.Content); err != nil {
+// writeFixtureTests records each package's Go Example calls by running them,
+// and emits the behavioural suites. A package with no Examples simply gets none.
+//
+// Every package is recorded by one generated program, so a project with several
+// pays for one js/wasm build rather than one per package.
+func writeFixtureTests(cfg *config.Config, env *goenv.Env, b *scan.Bundle, testDir string, w *writer, out io.Writer) error {
+	groups := make([]fixtures.Group, 0, len(b.Modules))
+	for i, mod := range b.Modules {
+		calls, skipped, err := scan.LoadExamples(scan.Options{
+			Dir:     cfg.Dir,
+			Pattern: cfg.Packages[i].Path,
+			Int64:   cfg.Int64Mode(),
+		}, mod)
+		if err != nil {
 			return err
 		}
+		// Calls the recorder cannot reproduce are named rather than dropped in
+		// silence, so it is always clear what is and is not covered.
+		for _, s := range skipped {
+			fmt.Fprintf(out, "  note: %s calls %s with %s; no fixture recorded (%s)\n",
+				s.Example, s.GoFunc, s.Reason, s.Pos)
+		}
+		groups = append(groups, fixtures.Group{Module: mod, Calls: calls})
 	}
-	if len(recorded) == 0 {
+
+	recorded, err := fixtures.Record(cfg.Dir, env.JSExecWrapper(), groups)
+	if err != nil {
+		return err
+	}
+
+	total := 0
+	for i, mod := range b.Modules {
+		// A call whose result changes between runs cannot be asserted on.
+		// Naming it is more useful than emitting a test that fails at random.
+		kept := recorded[i][:0]
+		for _, f := range recorded[i] {
+			if f.NonDeterministic {
+				fmt.Fprintf(out, "  note: %s calls %s, whose result differs between runs; no fixture recorded (%s)\n",
+					f.Example, f.JSFunc, f.Pos)
+				continue
+			}
+			kept = append(kept, f)
+		}
+
+		files, err := tstest.GenerateFixtures(mod, kept)
+		if err != nil {
+			return err
+		}
+		for _, f := range files {
+			if err := w.write(filepath.Join(testDir, f.Path), f.Content); err != nil {
+				return err
+			}
+		}
+		total += len(kept)
+	}
+
+	if total == 0 {
 		return nil
 	}
-	fmt.Fprintf(out, "recorded %d fixture(s) from Go Example functions\n", len(recorded))
+	fmt.Fprintf(out, "recorded %d fixture(s) from Go Example functions\n", total)
 	return nil
 }
 
