@@ -21,6 +21,10 @@ export interface Client {
   {{.NS}}: API_{{.NS}};
 {{- end}}
   dispose(): Promise<void>;
+{{- if .HasClasses}}
+  /** How many Go objects this instance is still holding. */
+  liveHandles(): Promise<number>;
+{{- end}}
 }
 
 /**
@@ -37,6 +41,9 @@ export async function createClient(opts?: LoadOptions): Promise<Client> {
     {{.NS}}: bind_{{.NS}}(rt),
 {{- end}}
     dispose: () => rt.dispose(),
+{{- if .HasClasses}}
+    liveHandles: async () => (await rt.call<{ live: number }>("__stats", [])).live,
+{{- end}}
   };
 }
 

@@ -9,7 +9,7 @@ DIST     := dist
 ARCHIVES := dist/archives
 EXAMPLES := urls blob worker-pool ginapi pdf \
             regex money gofmt chip8 chess sanitize expr text \
-            highlight excel cue git image qr multi
+            highlight excel cue git image qr multi session
 GOROOT_  := $(shell $(GO) env GOROOT)
 JS_EXEC  := $(GOROOT_)/lib/wasm/go_js_wasm_exec
 
@@ -224,9 +224,15 @@ test-runtime: ## Test the Go runtime bridge under the real wasm_exec.js
 
 .PHONY: examples
 examples: build ## Build and test every example end to end
+	@# An example may carry a verify.mjs for behaviour the generated suites
+	@# cannot reach -- a call on a handle has no literal form, so nothing about
+	@# a class can be recorded from a Go Example.
 	@for ex in $(EXAMPLES); do \
 	  echo "=== examples/$$ex ==="; \
 	  ( cd examples/$$ex && $(GO) test ./... >/dev/null && ../../$(BIN) test ) || exit 1; \
+	  if [ -f examples/$$ex/verify.mjs ]; then \
+	    ( cd examples/$$ex && node verify.mjs ) || exit 1; \
+	  fi; \
 	done
 
 .PHONY: check-generated

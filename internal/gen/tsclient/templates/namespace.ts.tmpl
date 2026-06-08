@@ -9,7 +9,8 @@ import { bind, type {{.APIName}} } from "./generated/{{.NS}}/client.js";
 import { sharedRuntime } from "./runtime/instance.{{.Target}}.js";
 
 export * from "./generated/{{.NS}}/types.js";
-export type { {{.APIName}} };
+{{if .Classes}}export { {{join .Classes ", "}} } from "./generated/{{.NS}}/classes.js";
+{{end}}export type { {{.APIName}} };
 
 // A function whose JavaScript name is a reserved word has no named export here,
 // because `export const new` is a syntax error. It is still on the client

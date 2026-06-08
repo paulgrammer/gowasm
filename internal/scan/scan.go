@@ -70,9 +70,23 @@ func Load(opts Options) (*Module, error) {
 	}
 
 	docs := buildDocs(pkg)
+
+	// Which types become classes is decided first, from the exported surface
+	// alone. It cannot be worked out later: collectTypes discovers types while
+	// it drains, so the answer would depend on the order it happened to reach
+	// them. See resource.go.
+	classes, err := classify(pkg, opts.Dir)
+	if err != nil {
+		return nil, err
+	}
+
 	m := tsmap.New(opts.Int64)
 
 	mod := &Module{PkgPath: pkg.PkgPath, PkgName: pkg.Name}
+	for _, name := range classes.demoted {
+		mod.Notes = append(mod.Notes,
+			fmt.Sprintf("%s has methods but is used as a value, so it stays a plain interface and its methods are not exposed", name))
+	}
 
 	scope := pkg.Types.Scope()
 	names := scope.Names()
@@ -112,11 +126,29 @@ func Load(opts Options) (*Module, error) {
 		mod.Funcs = append(mod.Funcs, f)
 	}
 
-	if len(mod.Funcs) == 0 {
+	// Classes are built before types are drained, so the parameters and results
+	// of their methods reach the mapper in time to be discovered like any
+	// others.
+	classNames := make([]string, 0, len(classes.classes))
+	byName := map[string]*types.Named{}
+	for obj, named := range classes.classes {
+		classNames = append(classNames, obj.Name())
+		byName[obj.Name()] = named
+	}
+	sort.Strings(classNames)
+	for _, name := range classNames {
+		c, err := buildClass(pkg, opts.Dir, byName[name], m, docs, classes, mod)
+		if err != nil {
+			return nil, err
+		}
+		mod.Classes = append(mod.Classes, c)
+	}
+
+	if len(mod.Funcs) == 0 && len(mod.Classes) == 0 {
 		return nil, fmt.Errorf("package %s exports no functions that can cross the boundary", pkg.PkgPath)
 	}
 
-	if err := collectTypes(pkg, opts.Dir, m, mod, docs); err != nil {
+	if err := collectTypes(pkg, opts.Dir, m, mod, docs, classes); err != nil {
 		return nil, err
 	}
 
@@ -240,7 +272,7 @@ func buildFunc(pkg *packages.Package, base string, fn *types.Func, sig *types.Si
 
 // collectTypes drains the mapper's discovery accumulator, which grows while it
 // is being read because emitting one struct can reveal more named types.
-func collectTypes(pkg *packages.Package, base string, m *tsmap.Mapper, mod *Module, docs docIndex) error {
+func collectTypes(pkg *packages.Package, base string, m *tsmap.Mapper, mod *Module, docs docIndex, classes classification) error {
 	done := map[string]bool{}
 	for {
 		pending := m.Discovered()
@@ -252,6 +284,12 @@ func collectTypes(pkg *packages.Package, base string, m *tsmap.Mapper, mod *Modu
 			}
 			done[name] = true
 			progress = true
+
+			// A class has no data shape: it crosses as a handle, so there is no
+			// interface to declare and nothing for the codec to convert.
+			if classes.isClass(n) {
+				continue
+			}
 
 			doc := docs[n.Obj().Pos()]
 			switch under := n.Underlying().(type) {

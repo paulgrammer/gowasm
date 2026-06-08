@@ -138,6 +138,12 @@ func generate(cfg *config.Config, env *goenv.Env, out io.Writer, opts genOptions
 		return nil, err
 	}
 
+	for _, mod := range bundle.Modules {
+		for _, note := range mod.Notes {
+			fmt.Fprintf(out, "  note: %s\n", note)
+		}
+	}
+
 	for _, name := range tsclient.ReservedNames(bundle) {
 		fmt.Fprintf(out, "  note: %s is a JavaScript reserved word, so it has no named export; "+
 			"reach it through createClient()\n", name)

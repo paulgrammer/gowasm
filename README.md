@@ -170,7 +170,8 @@ TypeScript.
 | `map[K]V` | `Record<string, V>` |
 | `*T` | `T \| null` |
 | `time.Time` | `ISODateTime` |
-| named struct | `interface`, embedded structs become `extends` |
+| named struct, used by value | `interface`, embedded structs become `extends` |
+| named struct with methods, only ever `*T` | a `class` with identity — see [Types with methods](#types-with-methods) |
 | named scalar with constants | a literal union — a real enum |
 | named scalar without constants | a type alias, keeping the name |
 | `interface{}` | `unknown` |
@@ -182,6 +183,64 @@ generation stops rather than emitting `unknown` and failing at runtime instead.
 Signatures follow the same idea. A leading `context.Context` is dropped from the
 JavaScript signature; a trailing `error` becomes a rejected promise; several
 non-error results become a tuple; a variadic parameter becomes a rest parameter.
+
+## Types with methods
+
+A struct used as a value is data: it crosses as JSON and has no identity. A
+struct with exported methods that is only ever seen behind a pointer is a
+*resource*, and becomes a class:
+
+```go
+type Store struct {
+	Name string `json:"name"`
+}
+
+func Open(name string) (*Store, error)
+func (s *Store) Set(key, value string) error
+func (s *Store) Get(key string) (string, error)
+func (s *Store) Close() error
+```
+
+```ts
+await using s = (await open("cart"))!;
+
+await s.set("sku", "1234");
+await s.get("sku");     // "1234"
+await s.name;           // "cart" — read from Go, never from a copy
+await s.setName("basket");
+```
+
+The object stays in Go and JavaScript holds a handle, so a method always sees
+what the last one left. Exported fields are getters rather than properties for
+the same reason: a value copied when the handle was made would be stale the
+moment a method touched it, with nothing in the type to say so. Writes are
+`setName(v)` because an assignment cannot be awaited, and a fire-and-forget
+write would drop its error on the floor.
+
+`close()` releases the handle, and calls a Go `Close() error` first if the type
+has one. Bind it with `await using` and that happens at the end of the scope.
+A `FinalizationRegistry` sweeps up handles nobody closed, but the specification
+allows an engine never to run it, so it is a net rather than a guarantee —
+`client.liveHandles()` is there to make a leak visible.
+
+**Both conditions are required, and that is deliberate.** `examples/urls` returns
+`*Match` from one function and `[]Match` from another, and `Match` is plain
+data; keying on pointerness alone would have turned it into an opaque handle.
+Nor do conventional methods count — `String`, `Error`, `MarshalJSON`, `Equal`
+and friends — because adding a debug `String()` to a `Point` should not
+restructure a published API.
+
+A type with methods that is used *both* ways cannot be either, and generation
+stops naming both positions rather than guessing. Say which you meant with a
+`//gowasm:data` or `//gowasm:resource` comment on the type.
+
+Some things follow from a handle being a handle: two handles to the same Go
+object are two different JavaScript objects, so `===` is not identity; a handle
+from one instance is refused by another rather than silently misread; and
+`close()` resolving means no *new* call can reach the object, not that Go has
+already dropped it — calls already in flight are allowed to finish.
+
+See [`examples/session`](examples/session) for the whole surface.
 
 Struct fields use their `json` tag. **A field with no tag keeps its Go name**,
 because that is what `encoding/json` actually emits — camelCasing it would make
@@ -282,6 +341,7 @@ Each is a self-contained module. Run `gowasm test` inside any of them.
 | [`worker-pool`](examples/worker-pool) | [Brandur Leach's Go worker pool](https://brandur.org/go-worker-pool), driven from Node |
 | [`ginapi`](examples/ginapi) | A [Gin](https://gin-gonic.com) application behind a real Node HTTP server |
 | [`multi`](examples/multi) | Three packages in one npm package, all three exporting `New` |
+| [`session`](examples/session) | Go types with methods, as classes with identity |
 
 The first few are the point of the tool: each is something the JavaScript
 ecosystem either does worse or cannot do at all. `regex` is the sharpest —

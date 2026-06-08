@@ -25,6 +25,18 @@ type File struct {
 	Content []byte
 }
 
+// hasClasses reports whether any package exposes a type with identity. Only
+// those need the disposal protocol, so a package without one keeps exactly the
+// tsconfig and the engines range it had.
+func hasClasses(b *scan.Bundle) bool {
+	for _, mod := range b.Modules {
+		if len(mod.Classes) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // Generate renders every scaffold file.
 func Generate(cfg *config.Config, b *scan.Bundle) ([]File, error) {
 	pkgJSON, err := packageJSON(cfg, b)
@@ -36,17 +48,23 @@ func Generate(cfg *config.Config, b *scan.Bundle) ([]File, error) {
 		{Path: "package.json", Content: pkgJSON},
 	}
 
-	for _, s := range []struct{ tmpl, path string }{
-		{"tsconfig.json.tmpl", "tsconfig.json"},
-		{"tsconfig.test.json.tmpl", "tsconfig.test.json"},
-		{"copy-assets.mjs.tmpl", "scripts/copy-assets.mjs"},
-		{"gitignore.tmpl", ".gitignore"},
+	// Symbol.asyncDispose is declared only in TypeScript's esnext.disposable
+	// library, and `await using` on a generated class needs it.
+	tsconfigData := map[string]any{"Classes": hasClasses(b)}
+	for _, s := range []struct {
+		tmpl, path string
+		data       any
+	}{
+		{"tsconfig.json.tmpl", "tsconfig.json", tsconfigData},
+		{"tsconfig.test.json.tmpl", "tsconfig.test.json", nil},
+		{"copy-assets.mjs.tmpl", "scripts/copy-assets.mjs", nil},
+		{"gitignore.tmpl", ".gitignore", nil},
 	} {
-		b, err := render(s.tmpl, nil)
+		content, err := render(s.tmpl, s.data)
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: s.path, Content: b})
+		files = append(files, File{Path: s.path, Content: content})
 	}
 
 	readme, err := render("README.md.tmpl", readmeData(cfg, b))
@@ -153,6 +171,14 @@ func entryExport(cfg *config.Config, base string) (*rootExport, error) {
 }
 
 func packageJSON(cfg *config.Config, b *scan.Bundle) ([]byte, error) {
+	// A package with classes needs Symbol.asyncDispose, which arrives in Node
+	// 20.4. Below it `await using` would be a silently useless member, and the
+	// alternative -- a library mutating the global Symbol -- would contradict
+	// "sideEffects": false. A package without classes keeps the wider range.
+	node := ">=20"
+	if hasClasses(b) {
+		node = ">=20.4.0"
+	}
 	root, err := entryExport(cfg, "index")
 	if err != nil {
 		return nil, err
@@ -189,7 +215,7 @@ func packageJSON(cfg *config.Config, b *scan.Bundle) ([]byte, error) {
 		// compiled module and the runtime bridge are both inside it.
 		Files:       []string{"dist"},
 		SideEffects: false,
-		Engines:     map[string]string{"node": ">=20"},
+		Engines:     map[string]string{"node": node},
 		Scripts: map[string]string{
 			"build":     "tsc && node scripts/copy-assets.mjs",
 			"typecheck": "tsc -p tsconfig.test.json",

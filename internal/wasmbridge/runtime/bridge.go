@@ -185,6 +185,11 @@ func Run(namespace string) {
 	// on a channel dispose() can close gives us a real shutdown path.
 	<-done
 
+	// Anything still held by a handle dies with the instance either way, but
+	// values that own an operating-system resource deserve their Close first.
+	// This is the only point where "dispose closes everything" can be made true.
+	releaseAll()
+
 	for _, f := range funcs {
 		f.Release()
 	}

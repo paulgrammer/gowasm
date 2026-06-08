@@ -47,6 +47,22 @@ type data struct {
 	Funcs     []fn
 }
 
+// classSet identifies the named types that cross as handles rather than as
+// JSON, so a result can be retained and a parameter resolved.
+type classSet map[*types.TypeName]bool
+
+func (cs classSet) has(t types.Type) (*types.Named, bool) {
+	p, ok := types.Unalias(t).(*types.Pointer)
+	if !ok {
+		return nil, false
+	}
+	n, ok := types.Unalias(p.Elem()).(*types.Named)
+	if !ok || !cs[n.Obj()] {
+		return nil, false
+	}
+	return n, true
+}
+
 // Generate renders the bridge source for every package in the bundle.
 //
 // One wasm module serves them all: splitting per package would multiply a
@@ -64,14 +80,43 @@ func Generate(b *scan.Bundle, namespace string) ([]byte, error) {
 		aliases[i] = imp.user(mod)
 	}
 
+	// Handles are per-instance and type-agnostic, so one set spanning every
+	// package in the bundle is exactly right.
+	classes := classSet{}
+	for _, mod := range b.Modules {
+		for _, c := range mod.Classes {
+			if c.Named != nil {
+				classes[c.Named.Obj()] = true
+			}
+		}
+	}
+
 	for i, mod := range b.Modules {
 		alias := aliases[i]
 		for _, f := range mod.Funcs {
-			g, err := renderFunc(f, mod.Wire(f), alias, imp)
+			g, err := renderFunc(f, mod.Wire(f), alias, "", imp, classes)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %s: %w", f.Pos, f.GoName, err)
 			}
 			d.Funcs = append(d.Funcs, g)
+		}
+		for _, c := range mod.Classes {
+			recv := types.TypeString(types.NewPointer(c.Named), imp.qualifier)
+			for _, mth := range c.Methods {
+				g, err := renderFunc(mth, mod.Wire(mth), alias, recv, imp, classes)
+				if err != nil {
+					return nil, fmt.Errorf("%s: %s.%s: %w", mth.Pos, c.Name, mth.GoName, err)
+				}
+				d.Funcs = append(d.Funcs, g)
+			}
+			if c.HasGoClose {
+				d.Funcs = append(d.Funcs, renderGoClose(mod, c, recv))
+			}
+			for _, a := range c.Fields {
+				get, set := mod.WireAccessor(c, a)
+				d.Funcs = append(d.Funcs, renderGetter(c, a, get, recv, imp))
+				d.Funcs = append(d.Funcs, renderSetter(c, a, set, recv, imp))
+			}
 		}
 	}
 	d.Imports = imp.specs()
@@ -94,13 +139,25 @@ func Generate(b *scan.Bundle, namespace string) ([]byte, error) {
 	return src, nil
 }
 
-func renderFunc(f scan.Func, wire, alias string, imp *imports) (fn, error) {
+// renderFunc emits one registration. recvType is empty for a free function; for
+// a method it is the pointer type of the receiver, which arrives as a handle in
+// the first argument.
+func renderFunc(f scan.Func, wire, alias, recvType string, imp *imports, classes classSet) (fn, error) {
 	g := fn{
 		GoName: f.GoName,
 		JSName: f.JSName,
 		Wire:   wire,
 		Doc:    firstLine(f.Doc),
 		Arity:  len(f.Params),
+	}
+
+	// The receiver rides in argument 0, so a method's wire arity is one more
+	// than the signature suggests.
+	shift := 0
+	if recvType != "" {
+		g.Arity++
+		shift = 1
+		g.Decodes = append(g.Decodes, borrowLines("self", 0, recvType, wire)...)
 	}
 
 	args := make([]string, 0, len(f.Params)+1)
@@ -110,14 +167,21 @@ func renderFunc(f scan.Func, wire, alias string, imp *imports) (fn, error) {
 	}
 
 	for i, p := range f.Params {
-		goType := types.TypeString(p.Type, imp.qualifier)
-		g.Decodes = append(g.Decodes,
-			fmt.Sprintf("var p%d %s", i, goType),
-			fmt.Sprintf("if err := json.Unmarshal(a[%d], &p%d); err != nil {", i, i),
-			fmt.Sprintf("\treturn nil, fmt.Errorf(%q, err)",
-				fmt.Sprintf("%s: argument %d (%s): %%w", f.JSName, i+1, p.GoName)),
-			"}",
-		)
+		at := i + shift
+		where := fmt.Sprintf("%s: argument %d (%s)", f.JSName, i+1, p.GoName)
+
+		if n, isClass := classes.has(p.Type); isClass {
+			goType := types.TypeString(types.NewPointer(n), imp.qualifier)
+			g.Decodes = append(g.Decodes, borrowOptional(fmt.Sprintf("p%d", i), at, goType, where)...)
+		} else {
+			goType := types.TypeString(p.Type, imp.qualifier)
+			g.Decodes = append(g.Decodes,
+				fmt.Sprintf("var p%d %s", i, goType),
+				fmt.Sprintf("if err := json.Unmarshal(a[%d], &p%d); err != nil {", at, i),
+				fmt.Sprintf("\treturn nil, fmt.Errorf(%q, err)", where+": %w"),
+				"}",
+			)
+		}
 		arg := fmt.Sprintf("p%d", i)
 		if f.Variadic && i == len(f.Params)-1 {
 			arg += "..."
@@ -125,7 +189,47 @@ func renderFunc(f scan.Func, wire, alias string, imp *imports) (fn, error) {
 		args = append(args, arg)
 	}
 
-	call := fmt.Sprintf("%s.%s(%s)", alias, f.GoName, strings.Join(args, ", "))
+	// A handle can only be a whole result. Emitting one inside a tuple would
+	// put a bare integer in a slot the TypeScript side has typed as a class,
+	// with nothing to catch it.
+	if len(f.Results) > 1 {
+		for _, r := range f.Results {
+			if n, isClass := classes.has(r.Type); isClass {
+				return g, fmt.Errorf("returns %s alongside other values; a class must be the only result", n.Obj().Name())
+			}
+		}
+	}
+
+	target := alias
+	if recvType != "" {
+		target = "self"
+	}
+	call := fmt.Sprintf("%s.%s(%s)", target, f.GoName, strings.Join(args, ", "))
+
+	// A single class result is retained and travels as its handle.
+	if len(f.Results) == 1 {
+		if _, isClass := classes.has(f.Results[0].Type); isClass {
+			if f.ReturnsError {
+				g.Body = append(g.Body,
+					fmt.Sprintf("r0, err := %s", call),
+					"if err != nil {",
+					"\treturn nil, err",
+					"}",
+				)
+			} else {
+				g.Body = append(g.Body, fmt.Sprintf("r0 := %s", call))
+			}
+			// The nil check lives here, where the static type is known: a nil
+			// *T inside an `any` is not itself nil, so Retain could not see it.
+			g.Body = append(g.Body,
+				"if r0 == nil {",
+				"\treturn int64(0), nil",
+				"}",
+				"return Retain(r0), nil",
+			)
+			return g, nil
+		}
+	}
 
 	nres := len(f.Results)
 	switch {
@@ -173,6 +277,107 @@ func renderFunc(f scan.Func, wire, alias string, imp *imports) (fn, error) {
 	}
 
 	return g, nil
+}
+
+// borrowLines resolves a handle that must be present, for a method receiver.
+func borrowLines(name string, at int, goType, wire string) []string {
+	return []string{
+		fmt.Sprintf("var %sHandle int64", name),
+		fmt.Sprintf("if err := json.Unmarshal(a[%d], &%sHandle); err != nil {", at, name),
+		fmt.Sprintf("\treturn nil, fmt.Errorf(%q, err)", wire+": receiver: %w"),
+		"}",
+		fmt.Sprintf("%sValue, %sDone, err := Borrow(%sHandle)", name, name, name),
+		"if err != nil {",
+		fmt.Sprintf("\treturn nil, fmt.Errorf(%q, err)", wire+": %w"),
+		"}",
+		fmt.Sprintf("defer %sDone()", name),
+		fmt.Sprintf("%s, ok := %sValue.(%s)", name, name, goType),
+		"if !ok {",
+		fmt.Sprintf("\treturn nil, fmt.Errorf(%q, %sHandle)", wire+": handle %d does not hold a "+strings.TrimPrefix(goType, "*"), name),
+		"}",
+	}
+}
+
+// borrowOptional resolves a handle argument that may be null, which arrives as
+// handle 0.
+func borrowOptional(name string, at int, goType, where string) []string {
+	return []string{
+		fmt.Sprintf("var %sHandle int64", name),
+		fmt.Sprintf("if err := json.Unmarshal(a[%d], &%sHandle); err != nil {", at, name),
+		fmt.Sprintf("\treturn nil, fmt.Errorf(%q, err)", where+": %w"),
+		"}",
+		fmt.Sprintf("var %s %s", name, goType),
+		fmt.Sprintf("if %sHandle != 0 {", name),
+		fmt.Sprintf("\tvalue, done, err := Borrow(%sHandle)", name),
+		"\tif err != nil {",
+		fmt.Sprintf("\t\treturn nil, fmt.Errorf(%q, err)", where+": %w"),
+		"\t}",
+		"\tdefer done()",
+		"\tvar ok bool",
+		fmt.Sprintf("\t%s, ok = value.(%s)", name, goType),
+		"\tif !ok {",
+		fmt.Sprintf("\t\treturn nil, fmt.Errorf(%q, %sHandle)", where+": handle %d does not hold a "+strings.TrimPrefix(goType, "*"), name),
+		"\t}",
+		"}",
+	}
+}
+
+// renderGoClose emits the registration behind the generated close(), for a type
+// that declares its own Close() error. Releasing the handle is the JS side's
+// job; this is only the user's cleanup.
+func renderGoClose(mod *scan.Module, c scan.Class, recvType string) fn {
+	wire := mod.Wire(scan.Func{Recv: c.Name, JSName: "__goClose"})
+	return fn{
+		GoName:  "Close",
+		JSName:  "__goClose",
+		Wire:    wire,
+		Arity:   1,
+		Decodes: borrowLines("self", 0, recvType, wire),
+		Body: []string{
+			"if err := self.Close(); err != nil {",
+			"\treturn nil, err",
+			"}",
+			"return nil, nil",
+		},
+	}
+}
+
+// renderGetter reads one exported field. It is a call rather than part of the
+// handle because the object is mutable: a value copied when the handle was made
+// would be stale the moment a method touched it.
+func renderGetter(c scan.Class, a scan.Accessor, wire, recvType string, imp *imports) fn {
+	return fn{
+		GoName:  a.GoName,
+		JSName:  a.JSName,
+		Wire:    wire,
+		Doc:     firstLine(a.Doc),
+		Arity:   1,
+		Decodes: borrowLines("self", 0, recvType, wire),
+		Body:    []string{fmt.Sprintf("return self.%s, nil", a.GoName)},
+	}
+}
+
+// renderSetter writes one exported field.
+func renderSetter(c scan.Class, a scan.Accessor, wire, recvType string, imp *imports) fn {
+	goType := types.TypeString(a.Type, imp.qualifier)
+	decodes := borrowLines("self", 0, recvType, wire)
+	decodes = append(decodes,
+		fmt.Sprintf("var v %s", goType),
+		"if err := json.Unmarshal(a[1], &v); err != nil {",
+		fmt.Sprintf("\treturn nil, fmt.Errorf(%q, err)", wire+": %w"),
+		"}",
+	)
+	return fn{
+		GoName:  a.GoName,
+		JSName:  a.SetName,
+		Wire:    wire,
+		Arity:   2,
+		Decodes: decodes,
+		Body: []string{
+			fmt.Sprintf("self.%s = v", a.GoName),
+			"return nil, nil",
+		},
+	}
 }
 
 // --- import bookkeeping ---

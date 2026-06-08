@@ -23,10 +23,14 @@ type codec struct {
 	needs map[string]bool
 	// structs maps a named type to its declaration, for walking fields.
 	structs map[string]scan.Struct
+	// classes cross as integer handles, so they are never converted. Without
+	// this the walk would fall through to a class's real fields and emit a
+	// conversion against a number.
+	classes classSet
 }
 
-func newCodec(mod *scan.Module) *codec {
-	c := &codec{needs: map[string]bool{}, structs: map[string]scan.Struct{}}
+func newCodec(mod *scan.Module, cs classSet) *codec {
+	c := &codec{needs: map[string]bool{}, structs: map[string]scan.Struct{}, classes: cs}
 	for _, s := range mod.Structs {
 		c.structs[s.Name] = s
 	}
@@ -34,17 +38,39 @@ func newCodec(mod *scan.Module) *codec {
 }
 
 // Needed reports whether anything in the module requires conversion.
+//
+// Class members count: a method returning []byte needs the same conversion a
+// function returning []byte does, and classes.ts imports from the same file.
 func (c *codec) Needed(mod *scan.Module) bool {
 	for _, f := range mod.Funcs {
-		for _, p := range f.Params {
-			if c.needsCodec(p.Type, nil) {
+		if c.needsSignature(f) {
+			return true
+		}
+	}
+	for _, cl := range mod.Classes {
+		for _, m := range cl.Methods {
+			if c.needsSignature(m) {
 				return true
 			}
 		}
-		for _, r := range f.Results {
-			if c.needsCodec(r.Type, nil) {
+		for _, a := range cl.Fields {
+			if c.needsCodec(a.Type, nil) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func (c *codec) needsSignature(f scan.Func) bool {
+	for _, p := range f.Params {
+		if c.needsCodec(p.Type, nil) {
+			return true
+		}
+	}
+	for _, r := range f.Results {
+		if c.needsCodec(r.Type, nil) {
+			return true
 		}
 	}
 	return false
@@ -67,6 +93,9 @@ func (c *codec) Structs(mod *scan.Module) []scan.Struct {
 // cycles in self-referential types.
 func (c *codec) needsCodec(t types.Type, seen map[string]bool) bool {
 	if t == nil {
+		return false
+	}
+	if c.classes.has(t) {
 		return false
 	}
 	switch u := types.Unalias(t).(type) {
@@ -199,8 +228,22 @@ func buildCodecViews(c *codec, mod *scan.Module) ([]codecView, bool) {
 		}
 		out = append(out, codecView{Name: s.Name, DecodeBody: dv, EncodeBody: ev})
 	}
-	// A top-level map of binary values also needs the helper.
-	for _, f := range mod.Funcs {
+	// A top-level map of binary values also needs the helper, wherever it
+	// appears: a free function, a method, or a field accessor.
+	// Copied rather than appended to mod.Funcs: that list is the module's public
+	// function surface, and a method leaking into it would show up in the API
+	// interface, the named exports and the contract tests.
+	sigs := append([]scan.Func(nil), mod.Funcs...)
+	for _, cl := range mod.Classes {
+		sigs = append(sigs, cl.Methods...)
+		for _, a := range cl.Fields {
+			if strings.Contains(c.decode(a.Type, "x"), "mapValues(") ||
+				strings.Contains(c.encode(a.Type, "x"), "mapValues(") {
+				usesMap = true
+			}
+		}
+	}
+	for _, f := range sigs {
 		for _, p := range f.Params {
 			if strings.Contains(c.encode(p.Type, "x"), "mapValues(") {
 				usesMap = true

@@ -2,6 +2,7 @@
 import { guard } from "{{.CoreDir}}/core.js";
 import type { Instance } from "{{.CoreDir}}/core.js";
 {{if .TypeImports}}import type { {{join .TypeImports ", "}} } from "./types.js";
+{{end}}{{if .ClassImports}}import { {{join .ClassImports ", "}} } from "./classes.js";
 {{end}}{{if .CodecImports}}import { {{join .CodecImports ", "}} } from "./codec.js";
 {{end}}
 /** Every exported function of the Go package `{{.PkgName}}`. */

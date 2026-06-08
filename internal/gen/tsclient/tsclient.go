@@ -60,6 +60,7 @@ type nsView struct {
 	APIName string
 	First   string
 	Funcs   []tsFunc
+	Classes []string
 }
 
 // Generate renders every TypeScript file for the bundle.
@@ -100,9 +101,10 @@ func Generate(b *scan.Bundle, opts Options) ([]File, error) {
 		}
 		files = append(files, File{Path: dir + "/types.ts", Content: types})
 
-		cdc := newCodec(mod)
+		cs := newClassSet(mod)
+		cdc := newCodec(mod, cs)
 		useCodec := cdc.Needed(mod)
-		funcs := renderFuncs(mod, cdc)
+		funcs := renderFuncs(mod, cdc, cs)
 		if useCodec {
 			codecViews, usesMapValues := buildCodecViews(cdc, mod)
 			content, err := render("codec.ts.tmpl", map[string]any{
@@ -122,6 +124,7 @@ func Generate(b *scan.Bundle, opts Options) ([]File, error) {
 			"CoreDir":      coreDir + "/runtime",
 			"Funcs":        funcs,
 			"TypeImports":  typeImports(mod, funcs),
+			"ClassImports": usedClasses(mod, funcs),
 			"CodecImports": codecImports(cdc, mod, useCodec),
 		})
 		if err != nil {
@@ -129,7 +132,23 @@ func Generate(b *scan.Bundle, opts Options) ([]File, error) {
 		}
 		files = append(files, File{Path: dir + "/client.ts", Content: client})
 
-		v := nsView{NS: mod.Namespace, PkgName: mod.PkgName, APIName: api, Funcs: funcs}
+		// A class is a value, not a shape, so it lives in its own module rather
+		// than in the type-only types.ts.
+		if len(mod.Classes) > 0 {
+			views := buildClasses(mod, cdc, cs)
+			content, err := render("classes.ts.tmpl", map[string]any{
+				"Classes":      views,
+				"CoreDir":      coreDir + "/runtime",
+				"TypeImports":  classTypeImports(mod, views),
+				"CodecImports": classCodecImports(views),
+			})
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, File{Path: dir + "/classes.ts", Content: content})
+		}
+
+		v := nsView{NS: mod.Namespace, PkgName: mod.PkgName, APIName: api, Funcs: funcs, Classes: classNames(mod)}
 		if len(funcs) > 0 {
 			v.First = funcs[0].JSName
 		}
@@ -151,6 +170,7 @@ func Generate(b *scan.Bundle, opts Options) ([]File, error) {
 			entry, err := render("index.ts.tmpl", map[string]any{
 				"APIName":    views[0].APIName,
 				"Funcs":      views[0].Funcs,
+				"Classes":    classNames(b.Modules[0]),
 				"Namespace":  opts.Namespace,
 				"LoaderFn":   loaderFn,
 				"LoaderFile": loaderFile,
@@ -181,6 +201,7 @@ func Generate(b *scan.Bundle, opts Options) ([]File, error) {
 				"APIName": v.APIName,
 				"First":   v.First,
 				"Funcs":   v.Funcs,
+				"Classes": v.Classes,
 				"Package": opts.Package,
 				"Target":  target,
 			})
@@ -190,8 +211,15 @@ func Generate(b *scan.Bundle, opts Options) ([]File, error) {
 			files = append(files, File{Path: v.NS + "." + target + ".ts", Content: nsFile})
 		}
 
+		hasClasses := false
+		for _, mod := range b.Modules {
+			if len(mod.Classes) > 0 {
+				hasClasses = true
+			}
+		}
 		entry, err := render("index.multi.ts.tmpl", map[string]any{
 			"Namespaces": views,
+			"HasClasses": hasClasses,
 			"First":      views[0],
 			"Package":    opts.Package,
 			"Target":     target,
@@ -239,7 +267,7 @@ type tsFunc struct {
 	Key string
 }
 
-func renderFuncs(mod *scan.Module, cdc *codec) []tsFunc {
+func renderFuncs(mod *scan.Module, cdc *codec, cs classSet) []tsFunc {
 	out := make([]tsFunc, 0, len(mod.Funcs))
 	for _, f := range mod.Funcs {
 		var params, names, args []string
@@ -253,6 +281,10 @@ func renderFuncs(mod *scan.Module, cdc *codec) []tsFunc {
 			} else {
 				params = append(params, p.JSName+": "+p.TS)
 				names = append(names, p.JSName)
+			}
+			if name, isClass := cs.of(p.Type); isClass {
+				args = append(args, fmt.Sprintf("%s.__unwrap(%s, rt, %q)", name, p.JSName, f.JSName))
+				continue
 			}
 			args = append(args, cdc.encode(p.Type, p.JSName))
 		}
@@ -270,11 +302,17 @@ func renderFuncs(mod *scan.Module, cdc *codec) []tsFunc {
 		}
 
 		// A result carrying binary data is converted around the awaited call, so
-		// the caller never sees the base64 the wire format uses.
+		// the caller never sees the base64 the wire format uses. A returned
+		// handle is wrapped into its class in the same place.
 		if len(f.Results) == 1 {
-			call := fmt.Sprintf("(await rt.call<any>(%q, [%s]))", fn.Wire, fn.CallArgs)
-			if decoded := cdc.decode(f.Results[0].Type, call); decoded != call {
-				fn.Decode = decoded
+			if name, isClass := cs.of(f.Results[0].Type); isClass {
+				fn.Decode = fmt.Sprintf("%s.__wrap(rt, await rt.call<number>(%q, [%s]))",
+					name, fn.Wire, fn.CallArgs)
+			} else {
+				call := fmt.Sprintf("(await rt.call<any>(%q, [%s]))", fn.Wire, fn.CallArgs)
+				if decoded := cdc.decode(f.Results[0].Type, call); decoded != call {
+					fn.Decode = decoded
+				}
 			}
 		}
 		out = append(out, fn)
@@ -366,6 +404,97 @@ func typeImports(mod *scan.Module, funcs []tsFunc) []string {
 	return out
 }
 
+// usedClasses lists the classes client.ts references. They are value imports,
+// not type imports: bind() constructs them.
+func usedClasses(mod *scan.Module, funcs []tsFunc) []string {
+	declared := map[string]bool{}
+	for _, c := range mod.Classes {
+		declared[c.Name] = true
+	}
+	used := map[string]bool{}
+	for _, f := range funcs {
+		for _, ident := range identifiers(f.TSParams + " " + f.TSReturn + " " + f.CallArgs + " " + f.Decode) {
+			if declared[ident] {
+				used[ident] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(used))
+	for name := range used {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// classTypeImports lists the declared type names classes.ts mentions.
+func classTypeImports(mod *scan.Module, views []classView) []string {
+	declared := map[string]bool{}
+	for _, s := range mod.Structs {
+		declared[s.Name] = true
+	}
+	for _, e := range mod.Enums {
+		declared[e.Name] = true
+	}
+	for _, a := range mod.Aliases {
+		declared[a.Name] = true
+	}
+	if mod.UsesISODateTime {
+		declared[tsmap.ISODateTime] = true
+	}
+
+	used := map[string]bool{}
+	note := func(s string) {
+		for _, ident := range identifiers(s) {
+			if declared[ident] {
+				used[ident] = true
+			}
+		}
+	}
+	for _, v := range views {
+		for _, f := range v.Fields {
+			note(f.TS)
+		}
+		for _, m := range v.Methods {
+			note(m.TSParams + " " + m.TSReturn)
+		}
+	}
+	out := make([]string, 0, len(used))
+	for name := range used {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// classCodecImports lists the conversion helpers classes.ts references.
+func classCodecImports(views []classView) []string {
+	used := map[string]bool{}
+	note := func(expr string) {
+		for _, name := range identifiers(expr) {
+			if strings.HasPrefix(name, "decode") || strings.HasPrefix(name, "encode") ||
+				name == "b64ToBytes" || name == "bytesToB64" {
+				used[name] = true
+			}
+		}
+	}
+	for _, v := range views {
+		for _, f := range v.Fields {
+			note(f.GetExpr)
+			note(f.SetArg)
+		}
+		for _, m := range v.Methods {
+			note(m.CallExpr)
+		}
+	}
+	out := make([]string, 0, len(used))
+	for name := range used {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 var identRe = regexp.MustCompile(`[A-Za-z_$][A-Za-z0-9_$]*`)
 
 func identifiers(s string) []string { return identRe.FindAllString(s, -1) }
@@ -393,6 +522,11 @@ func apiName(mod *scan.Module) string {
 	taken := map[string]bool{}
 	for _, s := range mod.Structs {
 		taken[s.Name] = true
+	}
+	// A class is exported from the same entry point, so the interface has to
+	// yield to it too.
+	for _, c := range mod.Classes {
+		taken[c.Name] = true
 	}
 	for _, e := range mod.Enums {
 		taken[e.Name] = true

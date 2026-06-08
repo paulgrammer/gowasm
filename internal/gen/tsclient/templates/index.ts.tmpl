@@ -4,11 +4,12 @@ import { createInstance, GoError, type LoadOptions } from "./runtime/core.js";
 import { {{.LoaderFn}} } from "./runtime/{{.LoaderFile}}.js";
 
 export * from "./generated/types.js";
-export { GoError };
+{{if .Classes}}export { {{join .Classes ", "}} } from "./generated/classes.js";
+{{end}}export { GoError };
 export type { {{.APIName}}, LoadOptions };
 
 /** An instance you own: call it, then dispose it. */
-export type Client = {{.APIName}} & { dispose(): Promise<void> };
+export type Client = {{.APIName}} & { dispose(): Promise<void>{{if .Classes}}; liveHandles(): Promise<number>{{end}} };
 
 /**
  * Boots a dedicated instance. Use this when you need a custom asset location,
@@ -16,8 +17,16 @@ export type Client = {{.APIName}} & { dispose(): Promise<void> };
  */
 export async function createClient(opts?: LoadOptions): Promise<Client> {
   const rt = await createInstance({{.LoaderFn}}, "{{.Namespace}}", opts);
-  return Object.assign(bind(rt), { dispose: () => rt.dispose() });
-}
+{{if .Classes}}  return Object.assign(bind(rt), {
+    dispose: () => rt.dispose(),
+    // How many Go objects this instance is still holding. A class you never
+    // close stays alive until the instance does, and for the shared instance
+    // behind the named exports that is the life of the process -- so this is
+    // the number to watch when memory grows and nothing explains it.
+    liveHandles: async () => (await rt.call<{ live: number }>("__stats", [])).live,
+  });
+{{else}}  return Object.assign(bind(rt), { dispose: () => rt.dispose() });
+{{end}}}
 
 // A lazily-booted shared instance backs the named exports below, so the common
 // case is a plain import with no lifecycle to manage.

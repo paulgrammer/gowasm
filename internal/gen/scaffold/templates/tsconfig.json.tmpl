@@ -3,7 +3,7 @@
     "target": "ES2023",
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "lib": ["ES2023", "DOM"],
+    "lib": [{{if .Classes}}"ES2023", "ESNext.Disposable", "DOM"{{else}}"ES2023", "DOM"{{end}}],
     "types": ["node"],
     "strict": true,
     "verbatimModuleSyntax": true,

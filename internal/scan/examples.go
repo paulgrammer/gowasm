@@ -64,7 +64,7 @@ func LoadExamples(opts Options, mod *Module) ([]ExampleCall, []Skipped, error) {
 				if !strings.HasPrefix(fd.Name.Name, "Example") {
 					continue
 				}
-				c, s := walkExample(pkg, opts.Dir, fd, byGoName)
+				c, s := walkExample(pkg, opts.Dir, fd, byGoName, mod)
 				calls = append(calls, c...)
 				skipped = append(skipped, s...)
 			}
@@ -108,7 +108,7 @@ func loadTestVariants(dir, pattern string) ([]*packages.Package, error) {
 	return out, nil
 }
 
-func walkExample(pkg *packages.Package, base string, fd *ast.FuncDecl, byGoName map[string]Func) ([]ExampleCall, []Skipped) {
+func walkExample(pkg *packages.Package, base string, fd *ast.FuncDecl, byGoName map[string]Func, mod *Module) ([]ExampleCall, []Skipped) {
 	var calls []ExampleCall
 	var skipped []Skipped
 
@@ -131,6 +131,13 @@ func walkExample(pkg *packages.Package, base string, fd *ast.FuncDecl, byGoName 
 		}
 
 		where := pos(pkg, base, call.Lparen)
+		if mod.InvolvesClass(f) {
+			skipped = append(skipped, Skipped{
+				Example: fd.Name.Name, GoFunc: f.GoName, Pos: where,
+				Reason: "a class, which has no literal form: the object lives in Go and only its handle crosses",
+			})
+			return true
+		}
 		args, err := renderArgs(pkg, call, f)
 		if err != nil {
 			skipped = append(skipped, Skipped{

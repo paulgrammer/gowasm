@@ -19,6 +19,8 @@ import (
 // conversion exactly where the bytes are, however deeply nested.
 type literalizer struct {
 	structs map[string]scan.Struct
+	// classes cross as handles, so they have no literal form.
+	classes map[string]bool
 	// enums maps a named type to the literals it admits, so a recorded value
 	// outside that set can be cast rather than emitted as a type error.
 	enums map[string]map[string]bool
@@ -35,11 +37,18 @@ type literalizer struct {
 func newLiteralizer(mod *scan.Module) *literalizer {
 	l := &literalizer{
 		structs: map[string]scan.Struct{},
+		classes: map[string]bool{},
 		enums:   map[string]map[string]bool{},
 		casts:   map[string]bool{},
 	}
 	for _, s := range mod.Structs {
 		l.structs[s.Name] = s
+	}
+	// A class is never rendered as a literal: fixtures involving one are
+	// skipped before they reach here, and anything that slipped through must
+	// not be walked as if it were a plain struct.
+	for _, c := range mod.Classes {
+		l.classes[c.Name] = true
 	}
 	for _, e := range mod.Enums {
 		members := map[string]bool{}
@@ -119,6 +128,9 @@ func (l *literalizer) walk(t types.Type, v any) string {
 
 	case *types.Named:
 		name := u.Obj().Name()
+		if l.classes[name] {
+			return jsonValue(v)
+		}
 		if s, known := l.structs[name]; known {
 			return l.walkStruct(s, v)
 		}
