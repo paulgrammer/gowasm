@@ -182,16 +182,22 @@ func sameOutcome(a, b record) bool {
 func renderRecorder(groups []Group) ([]byte, error) {
 	imp := newImports()
 
-	// Every package is registered before anything is rendered: one may take a
-	// type declared in another, and the qualifier has to know its alias by the
-	// time it sees that type.
+	// Every package is declared before anything is rendered: one may take a type
+	// declared in another, and the qualifier has to know its alias by the time it
+	// sees that type. Declaring does not import, because a package whose Example
+	// functions produced no recordable call contributes no code, and an unused
+	// import does not compile.
 	aliases := make([]string, len(groups))
 	for i, g := range groups {
-		aliases[i] = imp.user(g.Module)
+		aliases[i] = imp.declare(g.Module)
 	}
 
 	var body strings.Builder
 	for gi, g := range groups {
+		if len(g.Calls) == 0 {
+			continue
+		}
+		imp.addAlias(aliases[gi], g.Module.PkgPath)
 		byName := map[string]scan.Func{}
 		for _, f := range g.Module.Funcs {
 			byName[f.GoName] = f
@@ -334,15 +340,17 @@ func newImports() *imports {
 	return i
 }
 
-// user registers a recorded package and returns its alias. A lone package
-// keeps the name userpkg, so single-package output does not change.
-func (i *imports) user(mod *scan.Module) string {
+// declare names a recorded package without importing it, so the qualifier can
+// resolve its types while the import block still only lists what is used.
+//
+// A lone package keeps the name userpkg, so single-package output does not
+// change.
+func (i *imports) declare(mod *scan.Module) string {
 	alias := "userpkg"
 	if mod.Namespace != "" {
 		alias = "pkg_" + mod.Namespace
 	}
 	i.userAliases[mod.PkgPath] = alias
-	i.addAlias(alias, mod.PkgPath)
 	return alias
 }
 
