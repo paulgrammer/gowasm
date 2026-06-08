@@ -90,6 +90,12 @@ when comparing, so `gowasm` collides with `go-wasm`, an abandoned package from
 2018. Yarn, pnpm and bun honour the same `os` and `cpu` fields, so
 `yarn add -D @paulgrammer/gowasm` and the equivalents work too.
 
+### Shell script
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/paulgrammer/gowasm/main/install.sh | sh
+```
+
 ### Go
 
 ```sh
@@ -106,6 +112,22 @@ gowasm doctor
 
 Requires Go 1.24+ (for `lib/wasm`) and Node 20+. gowasm drives both rather than
 bundling them, and `gowasm doctor` says so if either is missing.
+
+The install script verifies the release checksum before installing, and refuses
+to install anything that does not match. It takes two environment variables:
+
+| Variable | Default |
+| --- | --- |
+| `GOWASM_VERSION` | the latest release tag |
+| `GOWASM_INSTALL` | `/usr/local/bin`, falling back to `~/.local/bin` |
+
+Installing through `curl` and `tar` also sidesteps the `com.apple.quarantine`
+attribute a browser download would set, so macOS Gatekeeper does not flag the
+binary even when a release is unsigned.
+
+While the repository is private its release assets are not publicly
+downloadable; the script detects that and falls back to `gh release download`,
+using your existing GitHub CLI login.
 
 ## Commands
 
