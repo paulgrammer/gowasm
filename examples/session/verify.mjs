@@ -82,16 +82,49 @@ test("close() is idempotent and a closed handle rejects", async () => {
   }
 });
 
-test("await using releases at the end of the scope", async () => {
+// `await using` is the reason Symbol.asyncDispose is on a generated class, but
+// the syntax only parses on Node 24 and up, while a generated package supports
+// 20.4 -- the release the symbol itself arrived in. So the protocol is tested
+// directly, and the syntax on top of it only where it parses at all. Compiling
+// it at runtime keeps this file loadable on the older Node that CI pins.
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+
+let bindAwaitUsing = null;
+try {
+  // Returns the handle after the scope that bound it has ended, so the caller
+  // can assert on what disposal did to it.
+  bindAwaitUsing = new AsyncFunction(
+    "open",
+    `await using s = await open();
+     await s.set("sku", "1234");
+     return s;`,
+  );
+} catch {
+  // A runtime without explicit resource management. The test below skips.
+}
+
+test("Symbol.asyncDispose closes the handle", async () => {
   const c = await createClient();
   try {
-    let escaped;
-    {
-      await using s = await c.open("cart", 8);
-      escaped = s;
-      await s.set("sku", "1234");
-      assert.equal(await s.get("sku"), "1234");
-    }
+    const s = await c.open("cart", 8);
+    await s.set("sku", "1234");
+    assert.equal(await s.get("sku"), "1234");
+
+    await s[Symbol.asyncDispose]();
+    await assert.rejects(() => s.get("sku"), (e) => e instanceof GoError);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test("await using releases at the end of the scope", {
+  skip: bindAwaitUsing
+    ? false
+    : "this Node does not parse `await using` (it arrives in 24)",
+}, async () => {
+  const c = await createClient();
+  try {
+    const escaped = await bindAwaitUsing(() => c.open("cart", 8));
     await assert.rejects(() => escaped.get("sku"), (e) => e instanceof GoError);
   } finally {
     await c.dispose();
